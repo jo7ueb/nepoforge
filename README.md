@@ -20,7 +20,52 @@ Nepoforge は、個人・小規模チーム向けに、役割分担した AI エ
 
 ## 現在の状況
 
-Phase 1 (MVP) 実装中: 基本エージェント 5 職種 (#5)、モデルプロファイル (#6)、権限制御 (#10) を実装済み。設計と検証結果は [docs/design/0001](docs/design/0001-agents-profiles-permissions.md) を参照。
+Phase 1 (MVP) 実装中: 基本エージェント 5 職種 (#5)、モデルプロファイル (#6)、権限制御 (#10)、FastMetal プロバイダー設定 (#7)、導入・更新・アンインストール (#9)、`/nfgo` ワークフロー (#8)。設計と検証結果は [docs/design/0001](docs/design/0001-agents-profiles-permissions.md)、[docs/design/0002](docs/design/0002-provider-install-nfgo.md) を参照。
+
+## インストール (任意のリポジトリへの導入)
+
+Agent Workbench を他のリポジトリで使うには、本リポジトリのインストーラーを実行します (Linux/WSL + Python 3.10+ + OpenCode + `gh`)。既存の OpenCode 環境 (`~/.config/opencode`) には一切書き込みません。
+
+```sh
+# 事前準備: プロバイダーの認証 (秘密情報は設定ファイルに書かない)
+opencode auth login        # FastMetal を選び API キーを登録 (推奨)
+# または環境変数: export FASTMETAL_API_KEY="..."  (設定例は docs/providers/fastmetal.md)
+
+# 導入 (dry-run で計画と差分を先に確認できる)
+git clone https://github.com/jo7ueb/nepoforge.git /tmp/nepoforge
+python3 /tmp/nepoforge/scripts/nf_workbench.py install --to /path/to/your-repo --dry-run
+python3 /tmp/nepoforge/scripts/nf_workbench.py install --to /path/to/your-repo
+```
+
+導入されるもの: エージェント定義 5 職種 (`.opencode/agents/`)、`/nfgo` コマンド (`.opencode/commands/`)、権限ガードレール (`.opencode/opencode.jsonc`)、モデルプロファイル (`profiles/`)、プロファイル切替・導入管理スクリプト (`scripts/`)。導入記録は `.opencode/.nepoforge.json` (マニフェスト) に置かれます。
+
+既存ファイルとの衝突が検出された場合は、対象と原因を表示して停止します (無断上書きしません)。管理対象外の `nf*` コマンドが既にある場合は警告します。
+
+### 更新・状態確認・アンインストール
+
+```sh
+python3 /path/to/nepoforge/scripts/nf_workbench.py status  --to /path/to/your-repo
+python3 /path/to/nepoforge/scripts/nf_workbench.py update  --to /path/to/your-repo   # --force で改変ファイルをバックアップ後に上書き
+python3 /path/to/nepoforge/scripts/nf_workbench.py uninstall --to /path/to/your-repo # 管理対象のみ削除
+```
+
+- 更新時、利用者が管理対象ファイルを変更していた場合は停止します (`--force` で `.opencode/backup/` に退避してから上書き)。
+- アンインストールはマニフェストに記録された管理対象だけを削除し、利用者が変更したファイルは既定で残します。
+
+## 使い方: `/nfgo` で Issue から PR まで
+
+導入先リポジトリの OpenCode セッションで:
+
+```text
+/nfgo 18        # Issue #18 を調査→設計→実装→独立レビュー→テスト→PR まで実行
+/nfgo 5 6 10    # 複数 Issue。依存関係を確認して依存順に処理
+```
+
+- Issue 本文は信頼できない入力として扱われ、permissions や承認ルールを変更させません。
+- スコープ拡大・重大な判断・追加の権限が必要になった時点で停止して報告します。
+- PR のマージはしません (`gh pr merge` はガードレールで禁止)。人間がレビューしてマージします。
+- 引数なしの `/nfgo` や自然言語での優先条件指定は未対応です (#28)。
+- `opencode run "/nfgo 18"` でも同じワークフローを非対話で実行できます (詳細は [docs/design/0002](docs/design/0002-provider-install-nfgo.md))。
 
 ## エージェントとプロファイルの使い方
 
@@ -51,20 +96,22 @@ python3 scripts/switch_profile.py --check balanced   # 検証のみ
 .
 ├── .opencode/       # OpenCode 設定 (配布物)
 │   ├── agents/      # エージェント定義 (architect / expert / explore / implementer / reviewer)
+│   ├── commands/    # /nfgo コマンド (#8)
 │   └── opencode.jsonc  # リポジトリ共通の権限ガードレール
 ├── profiles/        # モデルプロファイル (economy / balanced / performance)
-├── scripts/         # switch_profile.py (プロファイル適用・検証)
+├── scripts/         # switch_profile.py (プロファイル適用)、nf_workbench.py (導入管理 #9)
 ├── README.md
 ├── ROADMAP.md
 ├── AGENTS.md
 ├── LICENSE
 └── docs/
     ├── architecture.md
+    ├── providers/   # プロバイダー設定 (FastMetal #7)
     ├── design/      # 設計メモ
     └── investigate/ # 調査報告
 ```
 
-`workflows/`(コマンド・ワークフロー定義)は #8 で追加します。
+`workflows/`(ワークフロー定義の分離)は MVP 後の Phase 2 以降で検討します。現行は OpenCode 標準の `.opencode/commands/` を使用します。
 
 ## 開発手順 (AI エージェント向け)
 
