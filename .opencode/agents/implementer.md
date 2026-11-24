@@ -1,7 +1,7 @@
 ---
 description: 設計に基づき実装・修正・テストを行う。スコープを指示された Issue に限定する。
 mode: subagent
-model: fastmetal/japan-kimi-k2.7-code
+model: fastmetal/beam-1.0
 permissions:
   - action: subagent
     resource: "*"

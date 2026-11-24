@@ -1,7 +1,7 @@
 ---
 description: リポジトリ内のコード・文書を検索・読み取りして現状を把握する。ローカル読み取り専用。
 mode: subagent
-model: fastmetal/glm-5.3-flash
+model: fastmetal/japan-glm-5.3-flash
 permissions:
   - action: "*"
     resource: "*"

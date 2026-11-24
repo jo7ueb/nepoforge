@@ -1,7 +1,7 @@
 ---
 description: コード・公式資料の調査を行い、事実と出典を整理して報告する。読み取り専用。
 mode: subagent
-model: fastmetal/glm-5.3-flash
+model: fastmetal/japan-glm-5.3-flash
 permissions:
   - action: "*"
     resource: "*"

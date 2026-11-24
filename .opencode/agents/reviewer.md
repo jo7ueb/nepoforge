@@ -1,7 +1,7 @@
 ---
 description: 変更を独立レビューする。読み取り専用で、編集・マージは行わない。
 mode: subagent
-model: fastmetal/glm-5.3-flash
+model: fastmetal/japan-glm-5.3-flash
 permissions:
   - action: "*"
     resource: "*"

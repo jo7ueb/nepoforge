@@ -1,7 +1,7 @@
 ---
 description: 調査結果から設計をまとめる。docs/ 配下の設計文書の作成・更新のみを行い、それ以外は読み取り専用で動く。
 mode: subagent
-model: fastmetal/glm-5.3-flash
+model: fastmetal/japan-glm-5.3-flash
 permissions:
   - action: "*"
     resource: "*"
