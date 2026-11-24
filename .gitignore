@@ -1,0 +1,16 @@
+# 秘密情報 - コミット禁止
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# エディタ・OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# ローカル実行データ (Phase 2 の #12 で記録場所を正式定義)
+runs/
+*.log
