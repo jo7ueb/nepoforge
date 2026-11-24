@@ -17,6 +17,8 @@ Agent Workbench は、個人・小規模チーム向けに、役割分担した 
 
 詳細な責務分離と信頼境界は [docs/architecture.md](docs/architecture.md) を参照。
 
+長期構想（未着手）: [Loop Engineering / Graph Engineering / Self-Improving Factory](docs/future-factory-engineering.md) を参照。本構想は #37 の Autonomous R&D Factory ビジョンを補完するものであり、現在の MVP の優先順位や Phase の出口条件を変更しない。
+
 ## Phase 0 — Project Foundation
 
 - [x] #2 基本アーキテクチャと設計原則の文書化
