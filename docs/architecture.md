@@ -1,10 +1,10 @@
 # 基本アーキテクチャと設計原則
 
-この文書は [Issue #2](https://github.com/jo7ueb/agent-workbench/issues/2) に基づき、Agent Workbench の責務分離、設定優先順位、信頼境界、承認点、非目標を定義する。Phase 0 時点での設計文書であり、Phase 1 での検証 (#4) を経て更新される。
+この文書は [Issue #2](https://github.com/jo7ueb/nepoforge/issues/2) に基づき、Nepoforge の責務分離、設定優先順位、信頼境界、承認点、非目標を定義する。Phase 0 時点での設計文書であり、Phase 1 での検証 (#4) を経て更新される。
 
 ## 1. 目的とスコープ
 
-Agent Workbench は、役割分担した AI エージェントによるソフトウェア開発・研究活動の実行基盤である。品質を落とさずに、人間の介入と API 費用を減らす。
+Nepoforge は、役割分担した AI エージェントによるソフトウェア開発・研究活動の実行基盤である。品質を落とさずに、人間の介入と API 費用を減らす。
 
 本設計の中核は、**役割(role)・プロンプト・モデルプロファイル・ワークフロー・実行エンジン**の 5 つを分離し、それぞれを独立に変更できるようにすることである。
 
@@ -31,7 +31,7 @@ flowchart TB
 | 役割定義 (roles) | architect / expert / implementer / reviewer / explore の職務・入出力契約 | モデル非依存 |
 | プロンプト | 各役割の職務手順・規約参照 | モデル非依存 |
 | モデルプロファイル (profiles) | 役割 → provider/model の対応 (economy / balanced / performance) | プロンプト非依存 |
-| ワークフロー (workflows) | `/issue` 等の手順定義 (調査→設計→実装→独立レビュー→テスト→PR) | 実行エンジン非依存を目指す |
+| ワークフロー (workflows) | `/nfgo` 等の手順定義 (調査→設計→実装→独立レビュー→テスト→PR) | 実行エンジン非依存を目指す |
 | 実行エンジン | OpenCode の標準機能 (primary/subagent、task、permissions、設定マージ) | ワークフローから分離 |
 | 記録 | 実行履歴・トークン・費用 (Phase 2、#12) | その他から独立 |
 
