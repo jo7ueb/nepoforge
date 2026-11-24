@@ -1,6 +1,6 @@
 # 調査報告: OpenCode のエージェント構成と委譲仕様
 
-- Issue: [#4](https://github.com/jo7ueb/agent-workbench/issues/4)
+- Issue: [#4](https://github.com/jo7ueb/nepoforge/issues/4)
 - 検証日: 2026-11-24
 - 検証環境: OpenCode **v2.4.1** (Linux, バックグラウンドサービス共有、`opencode api get /api/info` で version 2.4.1 を確認)
 - 性質: 読み取り専用調査。プロジェクトコードへの変更なし。検証は `.sandbox/issue4-test/`(コミット対象外、検証後に削除)で実施し、ユーザーの既存設定は変更していない。
