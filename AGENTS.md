@@ -50,8 +50,10 @@ Issue を起点に、次の順序で進める (#8):
 
 ## リポジトリ構成
 
-- `docs/` — 設計文書。
-- Phase 1 以降で `agents/`(エージェント定義)、`profiles/`(モデルプロファイル)、`workflows/`(ワークフロー定義)を追加する。現時点では作成しない。
+- `docs/` — 設計文書 ([docs/architecture.md](docs/architecture.md)、設計メモ [docs/design/](docs/design/)、調査報告 [docs/investigate/](docs/investigate/))。
+- `.opencode/` — OpenCode 設定(配布物)。エージェント定義 (`agents/`) と権限ガードレール (`opencode.jsonc`)。
+- `profiles/` — モデルプロファイル (economy / balanced / performance)。適用は `scripts/switch_profile.py`。
+- Phase 1 以降で `workflows/`(ワークフロー定義)を追加する (#8)。
 
 ## 現在の状況
 

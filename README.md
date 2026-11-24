@@ -18,7 +18,20 @@ Agent Workbench は、個人・小規模チーム向けに、役割分担した 
 
 ## 現在の状況
 
-Phase 0 (Project Foundation): 目的・設計原則・責務分離・開発規約の文書化を進めています。機能実装にはまだ着手していません。
+Phase 1 (MVP) 実装中: 基本エージェント 5 職種 (#5)、モデルプロファイル (#6)、権限制御 (#10) を実装済み。設計と検証結果は [docs/design/0001](docs/design/0001-agents-profiles-permissions.md) を参照。
+
+## エージェントとプロファイルの使い方
+
+このリポジトリの `.opencode/` を使うと、OpenCode に 5 職種のサブエージェント (architect / expert / explore / implementer / reviewer) が追加されます。primary エージェントや個人設定は変更されません。
+
+モデルプロファイルを切り替えるには:
+
+```sh
+python3 scripts/switch_profile.py economy      # or balanced (既定) / performance
+python3 scripts/switch_profile.py --check balanced   # 検証のみ
+```
+
+個人用の上書きは `profiles/local.json` を作成してください (gitignore 済み)。グローバル設定 (`~/.config/opencode`) は変更しません。
 
 ## ドキュメント
 
@@ -34,23 +47,22 @@ Phase 0 (Project Foundation): 目的・設計原則・責務分離・開発規�
 
 ```
 .
+├── .opencode/       # OpenCode 設定 (配布物)
+│   ├── agents/      # エージェント定義 (architect / expert / explore / implementer / reviewer)
+│   └── opencode.jsonc  # リポジトリ共通の権限ガードレール
+├── profiles/        # モデルプロファイル (economy / balanced / performance)
+├── scripts/         # switch_profile.py (プロファイル適用・検証)
 ├── README.md
 ├── ROADMAP.md
 ├── AGENTS.md
 ├── LICENSE
 └── docs/
-    └── architecture.md
+    ├── architecture.md
+    ├── design/      # 設計メモ
+    └── investigate/ # 調査報告
 ```
 
-将来の構成 (Phase 1 以降で整備、現時点では作成しない):
-
-```
-.
-├── agents/       # エージェント定義 (architect / expert / implementer / reviewer / explore)
-├── profiles/     # モデルプロファイル (economy / balanced / performance)
-├── workflows/    # コマンド・ワークフロー定義 (/issue など)
-└── docs/         # 設計文書
-```
+`workflows/`(コマンド・ワークフロー定義)は #8 で追加します。
 
 ## 開発手順 (AI エージェント向け)
 
