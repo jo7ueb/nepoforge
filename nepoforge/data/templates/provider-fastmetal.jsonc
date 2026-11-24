@@ -1,0 +1,41 @@
+    // >>> nepoforge (managed) >>> FastMetal provider (#47)
+    // Nepoforge が追記した FastMetal provider 定義。
+    // API キーはここには書かない。環境変数または標準認証ストアで管理する。
+    "providers": {
+      "fastmetal": {
+        "name": "FastMetal",
+        "package": "@opencode/ai/providers/openai-compatible",
+        "settings": {
+          "baseURL": "https://api.fastmetal.ai/v1"
+        },
+        "models": {
+          // High performance
+          "anthropic-claude-opus-5-5": { "name": "Claude Opus 5.5" },
+          "anthropic-claude-sonnet-5-5": { "name": "Claude Sonnet 5.5" },
+          "gpt-6.1-sol": { "name": "GPT-6.1 Sol" },
+          "qwen4-max": { "name": "Qwen4 Max" },
+          "qwen3.8-max": { "name": "Qwen3.8 Max" },
+          "kimi-k3.1-pro": { "name": "Kimi K3.1 Pro" },
+          "deepseek-v4-pro": { "name": "DeepSeek V4 Pro" },
+          "glm-5.3": { "name": "GLM 5.3" },
+          // Balanced / Coding
+          "beam-1.0": { "name": "Reflection Beam 1.0" },
+          "japan-kimi-k2.7-code": { "name": "Kimi K2.7 Code Japan" },
+          "gemini-3.8-flash": { "name": "Gemini 3.8 Flash" },
+          "japan-qwen3.8-27b": { "name": "Qwen3.8 27B Japan" },
+          "japan-qwen3.6-35b": { "name": "Qwen3.6 35B Japan" },
+          "glm-5.3-flashx": { "name": "GLM 5.3 FlashX" },
+          "devstral-2512": { "name": "Devstral 2512" },
+          // Low cost / Subagents
+          "japan-deepseek-v4.1-flash-1017": { "name": "DeepSeek V4.1 Flash Japan" },
+          "deepseek-v4.1-flash-1017": { "name": "DeepSeek V4.1 Flash Global" },
+          "japan-glm-5.3-flash": { "name": "GLM 5.3 Flash Japan" },
+          "glm-5.3-flash": { "name": "GLM 5.3 Flash Global" },
+          "japan-glm-5.3-nvfp4": { "name": "GLM 5.3 NVFP4 Japan" },
+          "anthropic-claude-haiku-5-5": { "name": "Claude Haiku 5.5" },
+          "japan-gemma-4-31b": { "name": "Gemma 4 31B Japan" },
+          "gemma-4-26b-a4b-it": { "name": "Gemma 4 26B" }
+        }
+      }
+    }
+    // <<< nepoforge (managed) <<<

@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "nepoforge"
+description = "Nepoforge: user-level installer and management CLI for the Nepoforge OpenCode toolkit"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "Nepoforge contributors" }]
+keywords = ["opencode", "agents", "cli"]
+# 依存は最小限にする (#47): JSONC 解析と XDG パス解決のみ既製品を使う。
+dependencies = [
+    "json5>=0.9",
+    "platformdirs>=4",
+]
+dynamic = ["version"]
+
+[project.scripts]
+nepoforge = "nepoforge.cli:main"
+
+[tool.setuptools.dynamic]
+version = { attr = "nepoforge.__version__" }
+
+[tool.setuptools.packages.find]
+include = ["nepoforge*"]
+
+[tool.setuptools.package-data]
+nepoforge = [
+    "data/agents/*.md",
+    "data/commands/*.md",
+    "data/profiles/*.json",
+    "data/templates/*.jsonc",
+]
