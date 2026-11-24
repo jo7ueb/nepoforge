@@ -1,20 +1,20 @@
 #!/usr/bin/env python3
-"""Agent Workbench の導入・更新・アンインストールを行う (#9)。
+"""Nepoforge の導入・更新・アンインストールを行う (#9)。
 
 エージェント定義・権限ガードレール・コマンド・プロファイル・スクリプトを、
 対象リポジトリの `.opencode/` と `profiles/`・`scripts/` 配下にコピーする。
 既存の OpenCode 環境 (~/.config/opencode) には一切書き込まない。
 
 使い方:
-    np_workbench.py install [--to DIR] [--dry-run]
-    np_workbench.py update  [--to DIR] [--from DIR] [--dry-run] [--force]
-    np_workbench.py uninstall [--to DIR] [--dry-run] [--force]
-    np_workbench.py status  [--to DIR]
+    nf_workbench.py install [--to DIR] [--dry-run]
+    nf_workbench.py update  [--to DIR] [--from DIR] [--dry-run] [--force]
+    nf_workbench.py uninstall [--to DIR] [--dry-run] [--force]
+    nf_workbench.py status  [--to DIR]
 
 安全性の設計:
     - dry-run で計画と差分を表示し、何も変更しない。
     - 管理対象ファイルの記録を対象リポジトリの
-      `.opencode/.agent-workbench.json` (マニフェスト) に置く。
+      `.opencode/.nepoforge.json` (マニフェスト) に置く。
     - 衝突 (既存の非管理ファイル) は対象・原因を表示して停止し、上書きしない。
     - 更新時に利用者が管理対象ファイルを改変していた場合も停止 (--force で
       バックアップを作ってから上書き)。
@@ -23,7 +23,7 @@
     - 冪等: 導入済みの状態で install を繰り返しても変更しない。
 
 完了条件 (#9):
-    - コマンド名衝突 (np プリフィックス) の検出と既存コマンドの保護
+    - コマンド名衝突 (nf プリフィックス) の検出と既存コマンドの保護
     - 既存設定を破壊しない / 冪等 / 更新時の競合検出 / 管理対象だけ削除
 """
 
@@ -48,33 +48,33 @@ MANAGED_FILES = (
     ".opencode/agents/explore.md",
     ".opencode/agents/implementer.md",
     ".opencode/agents/reviewer.md",
-    ".opencode/commands/npgo.md",
+    ".opencode/commands/nfgo.md",
     ".opencode/opencode.jsonc",
     "profiles/economy.json",
     "profiles/balanced.json",
     "profiles/performance.json",
     "scripts/switch_profile.py",
-    "scripts/np_workbench.py",
+    "scripts/nf_workbench.py",
 )
 
 # .gitignore に管理ブロックとして追記する行 (対象リポジトリ側で必要な除外)。
-GITIGNORE_BLOCK_BEGIN = "# >>> agent-workbench (managed) >>>"
-GITIGNORE_BLOCK_END = "# <<< agent-workbench (managed) <<<"
+GITIGNORE_BLOCK_BEGIN = "# >>> nepoforge (managed) >>>"
+GITIGNORE_BLOCK_END = "# <<< nepoforge (managed) <<<"
 GITIGNORE_ENTRIES = (
-    "# Agent Workbench (#9): 個人上書きプロファイルと導入時バックアップ",
+    "# Nepoforge (#9): 個人上書きプロファイルと導入時バックアップ",
     "profiles/local.json",
     ".opencode/backup/",
 )
 
-MANIFEST_PATH = ".opencode/.agent-workbench.json"
+MANIFEST_PATH = ".opencode/.nepoforge.json"
 BACKUP_DIRNAME = ".opencode/backup"
 
 # 配布コマンドの名前空間 (#9 共通ルール)。
-COMMAND_PREFIX = "np"
+COMMAND_PREFIX = "nf"
 COMMANDS_DIR = ".opencode/commands"
 
 
-class WorkbenchError(Exception):
+class NepoforgeError(Exception):
     """明確なメッセージを持つ停止エラー。"""
 
 
@@ -97,7 +97,7 @@ def load_manifest(target: Path) -> dict | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         fail(f"manifest is broken: {path} ({exc})")
-    if data.get("tool") != "agent-workbench":
+    if data.get("tool") != "nepoforge":
         fail(f"manifest belongs to another tool: {path}")
     return data
 
@@ -158,7 +158,7 @@ def write_gitignore(target: Path, content: str) -> None:
 
 
 def check_command_namespace(target: Path, manifest: dict | None) -> list[str]:
-    """np プリフィックスのコマンドとの衝突を検出する。
+    """nf プリフィックスのコマンドとの衝突を検出する。
 
     検出できるのは対象リポジトリの `.opencode/commands/*.md` のみ。
     OpenCode 標準コマンド・ユーザーグローバル設定・プラグイン由来のコマンドは
@@ -175,8 +175,8 @@ def check_command_namespace(target: Path, manifest: dict | None) -> list[str]:
                 continue
             if file.name.startswith(COMMAND_PREFIX):
                 warnings.append(
-                    f"np プリフィックスのコマンドが既に存在します: {COMMANDS_DIR}/{file.name} "
-                    "(Agent Workbench とは別物です。混同に注意してください)"
+                    f"nf プリフィックスのコマンドが既に存在します: {COMMANDS_DIR}/{file.name} "
+                    "(Nepoforge の管理対象外です。利用者所有ファイルの可能性があるため確認してください)"
                 )
     return warnings
 
@@ -216,7 +216,7 @@ def report_state(state: dict[str, str]) -> None:
 def cmd_install(args: argparse.Namespace) -> int:
     target, source = args.target, args.source
     if target.resolve() == source.resolve():
-        fail("target is the agent-workbench repository itself. use --to <dir> for another repository")
+        fail("target is the Nepoforge repository itself. use --to <dir> for another repository")
     manifest = load_manifest(target)
     state = classify(target, manifest)
 
@@ -224,7 +224,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     if conflicts:
         print("conflict: 既存の非管理ファイルを上書きできないため停止しました:", file=sys.stderr)
         for rel in conflicts:
-            print(f"  [conflict] {rel} (Agent Workbench の管理外。移動・退避するか、内容を確認してください)", file=sys.stderr)
+            print(f"  [conflict] {rel} (Nepoforge の管理外。移動・退避するか、内容を確認してください)", file=sys.stderr)
         raise SystemExit(2)
 
     if manifest is not None and all(kind == "unchanged" for kind in state.values()):
@@ -255,8 +255,9 @@ def cmd_install(args: argparse.Namespace) -> int:
         print("dry-run: no changes made")
         for action, rel in plan:
             if action == "update":
+                old = target / rel
                 print(f"--- diff: {rel}")
-                print(diff_text(target / rel, source / rel), end="")
+                print(diff_text(old if old.is_file() else None, source / rel), end="")
         return 0
 
     for action, rel in plan:
@@ -267,7 +268,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         write_gitignore(target, gitignore_new)
 
     manifest_data = {
-        "tool": "agent-workbench",
+        "tool": "nepoforge",
         "version": VERSION,
         "installed_at": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
         "files": {rel: sha256_of(target / rel) for rel in MANAGED_FILES},
@@ -319,8 +320,9 @@ def cmd_update(args: argparse.Namespace) -> int:
         print("dry-run: no changes made")
         for action, rel in plan:
             if action == "update":
+                old = target / rel
                 print(f"--- diff: {rel}")
-                print(diff_text(target / rel, source / rel), end="")
+                print(diff_text(old if old.is_file() else None, source / rel), end="")
         return 0
 
     for action, rel in plan:
@@ -438,12 +440,12 @@ def main() -> int:
 
     def common(p: argparse.ArgumentParser) -> None:
         p.add_argument("--to", dest="target", type=Path, default=Path.cwd(), help="target repository (default: cwd)")
-        p.add_argument("--from", dest="source", type=Path, default=REPO_ROOT, help="agent-workbench source (default: script's repository)")
+        p.add_argument("--from", dest="source", type=Path, default=REPO_ROOT, help="Nepoforge source (default: script's repository)")
         p.add_argument("--dry-run", action="store_true", help="show the plan and diffs without changes")
         p.add_argument("--force", action="store_true", help="overwrite/delete user-modified managed files with backup")
 
     for name, fn in (("install", cmd_install), ("update", cmd_update), ("uninstall", cmd_uninstall), ("status", cmd_status)):
-        p = sub.add_parser(name, help=name + " Agent Workbench files")
+        p = sub.add_parser(name, help=name + " Nepoforge files")
         common(p)
         p.set_defaults(fn=fn)
 

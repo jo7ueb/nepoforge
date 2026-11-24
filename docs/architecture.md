@@ -96,7 +96,7 @@ flowchart TB
 | OpenCode 依存 (エージェント設定) | 同ファイルの frontmatter (`mode` / `model` / `permissions`) |
 | モデルプロファイル | `profiles/<name>.json` (役割 → `provider/model`)。適用は `scripts/switch_profile.py` が `model:` 行のみ差し替える |
 | 権限制御 | リポジトリ共通は `.opencode/opencode.jsonc` の `permissions`、役割別は各エージェント定義の `permissions` (V2 形式の順序付きルール、後勝ち) |
-| ワークフロー (#8) | `.opencode/commands/npgo.md` (OpenCode 標準コマンド)。`/npgo <番号>` が調査→設計→実装→独立レビュー→テスト→PR を実行。`opencode run` でも引数ありのコマンド展開が働くことを実機確認済み (設計メモ 0002 §4) |
+| ワークフロー (#8) | `.opencode/commands/nfgo.md` (OpenCode 標準コマンド)。`/nfgo <番号>` が調査→設計→実装→独立レビュー→テスト→PR を実行。`opencode run` でも引数ありのコマンド展開が働くことを実機確認済み (設計メモ 0002 §4) |
 
 - 生成器による `.opencode/` の自動生成は採用しなかった。単一の真実の源を `.opencode/agents/` に置き、モデル割当だけをデータ (profiles) から差し替える方式の方が、独自ツールを増やさず分離原則を満たすため (判断の詳細は [docs/design/0001](design/0001-agents-profiles-permissions.md))。
 - permissions は「後勝ち」の順序付きリストであり、広いルールを先に書き例外を後に置く。この順序規約は [docs/design/0001 §2](design/0001-agents-profiles-permissions.md) に記録した。
