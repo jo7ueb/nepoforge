@@ -146,7 +146,7 @@ def gitignore_plan(target: Path) -> tuple[str, str | None]:
     missing = [line for line in needed if line not in current]
     if not missing:
         return current, current
-    block = "\n" + GITIGNORE_BLOCK_BEGIN + "\n" + "\n".join(GITIGNORE_ENTRIES) + "\n" + GITIGNORE_BLOCK_END + "\n"
+    block = ("" if not current else "\n") + GITIGNORE_BLOCK_BEGIN + "\n" + "\n".join(GITIGNORE_ENTRIES) + "\n" + GITIGNORE_BLOCK_END + "\n"
     text = current if current.endswith("\n") or not current else current + "\n"
     return text + block, current
 
@@ -186,7 +186,7 @@ def backup_file(target: Path, rel: str) -> Path | None:
     src = target / rel
     if not src.is_file():
         return None
-    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    stamp = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S.%fZ")
     dest = target / BACKUP_DIRNAME / stamp / rel
     dest.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(src, dest)
