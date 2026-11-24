@@ -27,12 +27,13 @@ Phase 1 で以下の 5 役を実装する (#5)。実装前の作業でも、職�
 
 Issue を起点に、次の順序で進める (#8):
 
+0. **ドラフト PR 作成**: 最初のコミットの時点でブランチを作り、ドラフト PR を開く (`Refs #N`)。以後のコミットを随時 push する。
 1. **調査**: 対象のコード・公式資料を確認し、事実と仮説を区別して整理する。
 2. **設計**: 変更方針・影響範囲・代替案を明示する。
 3. **実装**: 既存の構成・命名・スタイルに合わせ、スコープを守る。
 4. **独立レビュー**: 別の役割(または別セッション)でレビューする。
 5. **修正・テスト**: 指摘を反映し、テストを実行する。
-6. **PR 作成**: 下記の PR ルールに従って提出する。
+6. **Ready for review**: PR を Ready に変更し、人間のレビューを待つ。検証結果・残存課題は PR 本文に記録する。
 
 ## PR ルール
 
@@ -40,6 +41,7 @@ Issue を起点に、次の順序で進める (#8):
 - 検証結果・残存課題・既知の限界を PR 本文に記録する。
 - 秘密情報を含めない。画像やログに秘密情報が写っていないか確認する。
 - 人間のレビューを待ち、承認された場合のみマージされる。
+- **PR は作業の最初のコミットの時点でドラフトとして作成する** (完成後ではない)。作業中もコミットを push し続け、進捗はドラフト PR で見えるようにする。レビュー可能になった段階で Ready for review に変更する。
 - PR の粒度はレビュー可能な大きさに保つ。無関係な変更を混ぜない。
 
 ## コミット・ブランチ規約
@@ -52,10 +54,12 @@ Issue を起点に、次の順序で進める (#8):
 ## リポジトリ構成
 
 - `docs/` — 設計文書 ([docs/architecture.md](docs/architecture.md)、設計メモ [docs/design/](docs/design/)、調査報告 [docs/investigate/](docs/investigate/))。
-- `.opencode/` — OpenCode 設定(配布物)。エージェント定義 (`agents/`) と権限ガードレール (`opencode.jsonc`)。
-- `profiles/` — モデルプロファイル (economy / balanced / performance)。適用は `scripts/switch_profile.py`。
+- `.opencode/` — OpenCode 設定(本リポジトリの開発環境)。エージェント定義 (`agents/`) と権限ガードレール (`opencode.jsonc`)。配布物の正本は `nepoforge/data/` (#47)。乖離はテストが検出する。
+- `profiles/` — モデルプロファイル (本リポジトリ開発用)。配布物は `nepoforge/data/profiles/`。適用は `scripts/switch_profile.py` または `nepoforge profile use`。
+- `nepoforge/` — 配布パッケージ本体 (#47)。ユーザー単位導入・管理 CLI。
+- `tests/` — 単体・統合テスト (API 課金なし)。実行: `python3 -m unittest discover -s tests -t .` (依存: json5, platformdirs)。
 - Phase 1 以降で `workflows/`(ワークフロー定義)を追加する (#8)。
 
 ## 現在の状況
 
-Phase 0 (Project Foundation): 文書整備のみ。Phase 1 以降の機能実装には着手しないこと。着手すべき Issue は [ROADMAP.md](ROADMAP.md) の推奨着手順を参照。
+Phase 1 (MVP) 完了 (#4〜#10)。Phase 2 以降の実装が進行中 (#47: パッケージ化・ユーザー単位導入・管理 CLI)。着手すべき Issue は [ROADMAP.md](ROADMAP.md) の推奨着手順を参照。
