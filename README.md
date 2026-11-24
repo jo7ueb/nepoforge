@@ -29,7 +29,7 @@ Phase 2 でユーザー単位のグローバル導入と `nepoforge` CLI (#47) �
 `nepoforge` CLI をユーザー環境 (PATH 上) に導入します。Linux/WSL + Python 3.11+ + OpenCode + `gh` を前提とし、root 権限も `curl | bash` も使いません。依存は `json5` と `platformdirs` のみです。
 
 ```sh
-# お好みのパッケージマネージャーで (認証付き private リポジトリからの導入)
+# お好みのパッケージマネージャーで (公開リポジトリ。https で認証なしに導入できる)
 uv tool install git+https://github.com/jo7ueb/nepoforge.git
 pipx install git+https://github.com/jo7ueb/nepoforge.git
 # または pip (ensurepip が必要な場合: python3 -m ensurepip --user)
