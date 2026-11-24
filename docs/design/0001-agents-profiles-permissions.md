@@ -48,7 +48,21 @@ permissions の記述方針 (重要):
   - 役割の過不足・モデル表記 (`provider/model`)・`opencode models` との照合を検証し、不明モデル・不足役割は明確なエラーで停止する (部分的な適用を起こさない)。
   - `--check` で適用状況の検証のみ (CI 向け)。`--models` で利用可能モデル一覧を表示。
   - `profiles/local.json` は gitignore 済みの個人上書きプロファイル。**グローバル設定 (`~/.config/opencode`) には一切書き込まない**ため、ユーザーの個人設定は保持される。
-- モデル ID の選定は暫定版 (#14 の比較評価で見直す)。fastmetal の cost フィールドが常に 0 のため費用評価は別途価格テーブルが必要 (#12)。
+- モデル ID の選定は FastMetal の料金表 ([fastmetal.jp/pricing](https://fastmetal.jp/pricing)、2026-11-24 時点) に基づく。単価 (¥/100万トークン、入力/出力):
+
+| モデル | 入力 | 出力 | 採用プロファイル (役割) |
+| --- | --- | --- | --- |
+| `japan-glm-5.3-flash` | ¥17.64 | ¥58.8 | economy (全役割)、balanced (判断系 4 役)、performance (explore) |
+| `beam-1.0` | ¥67.2 | ¥201.6 | balanced (implementer) — コーディング・エージェント特化 501B MoE、出力単価が `japan-kimi-k2.7-code` (¥530) より 62% 安い |
+| `glm-5.3` | ¥235.2 | ¥739.2 | performance (architect / reviewer) |
+| `japan-deepseek-v4.1-flash-1017` | ¥33.6 | ¥134.4 | performance (expert) — グローバル版と同額のため🇯🇵国内ホスト版を選択 |
+| `kimi-k3.1-pro` | ¥336 | ¥1,680 | performance (implementer) — フラッグシップ推論。同価格帯の `gpt-6.1-sol` (¥336/¥1,680) や `kimi-k3` (¥352.8/¥1,764) より安い |
+
+選定方針:
+
+- 同一モデルの `japan-` 付き (国内ホスト) 版が安い、または同額の場合は `japan-` 版を選ぶ (例: `japan-glm-5.3-flash` は `glm-5.3-flash` より 30% 安)。逆に `japan-qwen3.8-27b` (¥84/¥504) はグローバル版 (¥33.6/¥420) より高いため使わない。
+- 実装役は出力トークンが支配的なため出力単価を優先して比較する。
+- 詳細な品質比較は #14 の比較評価で見直す。fastmetal の cost フィールドが常に 0 のため費用評価は別途価格テーブルが必要 (#12)。
 
 ## 4. 権限制御 (`#10`)
 
@@ -79,6 +93,7 @@ permissions の記述方針 (重要):
 | V4 | 共通ガードレール | primary から `git push --force origin main` を実行 | **`Permission denied: shell` で不発** | `ses_...` (V4-forcepush-deny) |
 | V5 | architect・expert の委譲 | architect に docs/design-note.md 作成、expert に要約を指示 | **両方とも子セッションで実行され、architect の docs 編集は成功** (許可 `/docs/**` の確認) | `ses_df242224bffeVfGkqLDP0IOcQF`, `ses_df241f473ffe5dVgb9HLxo1Rde` |
 | V7 | プロファイル切替の実効性 | sandbox で `performance` を適用し reviewer を起動 | **子セッション model=glm-5.3 に変化** (切替前は glm-5.3-flash) | `ses_df2418830ffem0LgkNrP44S9W7` |
+| V8 | 再選定後の balanced implementer (`beam-1.0`) | sandbox で implementer にファイル作成を指示 | **子セッション agent=implementer, model=beam-1.0 でファイル作成成功** | `ses_df22e2ec4ffeehC7kkJJ9hQZHV` |
 | E1–E4 | スクリプトのエラー系 | 不明プロファイル / 不明モデル / 不足役割 / 過剰役割 | **すべて明確なエラーメッセージで非 0 終了** | コマンド実行ログ |
 
 完了条件の対応:
@@ -94,7 +109,7 @@ permissions の記述方針 (重要):
 3. **deny は理由のログを残しにくい** (ツール不可視化の挙動、調査報告 §4.4)。権限違反の監査は #12 の実行履歴記録で補完する。
 4. **本リポジトリ自身では `.opencode/**` の編集を禁止していない** (product のソースだから)。導入先リポジトリで運用する場合、そのリポジトリの implementer は編集できない。
 5. shell のガードレールはコマンド文字列パターンであり、迂回 (エイリアス・スクリプト経由) は原理的に可能。OpenCode 公式ドキュメントも「shell はホストユーザーの権限で動くため、狭い allowlist を推奨」と明記している。GitHub 側の保護 (branch protection 等) と併用する (#10 の GitHub 権限面)。
-6. モデル ID は fastmetal に依存した暫定値。第 2 プロバイダー対応は #19。
+6. モデル ID は fastmetal に依存した選定 (§3 の料金表ベース)。品質比較は #14、第 2 プロバイダー対応は #19。
 
 ## 7. 今後の参照
 

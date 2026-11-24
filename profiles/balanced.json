@@ -1,11 +1,11 @@
 {
   "name": "balanced",
-  "description": "バランス型(既定)。判断系は軽量モデル、実装はコード特化モデルに割り当てる。",
+  "description": "バランス型(既定)。判断系は軽量モデル、実装はコーディング・エージェント特化モデルに割り当てる。",
   "roles": {
-    "architect": "fastmetal/glm-5.3-flash",
-    "expert": "fastmetal/glm-5.3-flash",
-    "explore": "fastmetal/glm-5.3-flash",
-    "implementer": "fastmetal/japan-kimi-k2.7-code",
-    "reviewer": "fastmetal/glm-5.3-flash"
+    "architect": "fastmetal/japan-glm-5.3-flash",
+    "expert": "fastmetal/japan-glm-5.3-flash",
+    "explore": "fastmetal/japan-glm-5.3-flash",
+    "implementer": "fastmetal/beam-1.0",
+    "reviewer": "fastmetal/japan-glm-5.3-flash"
   }
 }
