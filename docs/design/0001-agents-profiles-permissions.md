@@ -1,6 +1,6 @@
 # 設計メモ: 基本エージェント・モデルプロファイル・権限制御
 
-- Issue: [#5](https://github.com/jo7ueb/agent-workbench/issues/5) / [#6](https://github.com/jo7ueb/agent-workbench/issues/6) / [#10](https://github.com/jo7ueb/agent-workbench/issues/10)
+- Issue: [#5](https://github.com/jo7ueb/nepoforge/issues/5) / [#6](https://github.com/jo7ueb/nepoforge/issues/6) / [#10](https://github.com/jo7ueb/nepoforge/issues/10)
 - 作成日: 2026-11-24
 - 前提: [調査報告 #4](../investigate/0001-opencode-agent-delegation.md)(OpenCode v2.4.1)、[architecture.md](../architecture.md)
 - 検証環境: OpenCode v2.4.0/2.4.1 (Linux)、FastMetal プロバイダー
@@ -113,5 +113,5 @@ permissions の記述方針 (重要):
 
 ## 7. 今後の参照
 
-- `/issue` コマンド (#8) は本設計の 5 職種を委譲順 (explore/expert → architect → implementer → reviewer) で呼び出すワークフローとして実装する。
+- `/nfgo` コマンド (#8) は本設計の 5 職種を委譲順 (explore/expert → architect → implementer → reviewer) で呼び出すワークフローとして実装する。
 - 設定検証と CI (#11) は `switch_profile.py --check` を流用できる。

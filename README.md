@@ -1,8 +1,10 @@
-# agent-workbench
+# Nepoforge
+
+**Autonomous R&D Factory** — Human-directed. Agent-driven. Continuously improving.
 
 Cost-efficient multi-agent workflows for AI-assisted software engineering and research.
 
-Agent Workbench は、個人・小規模チーム向けに、役割分担した AI エージェントによるソフトウェア開発・研究活動の実行基盤を提供します。品質を落とさずに、人間の介入と API 費用を減らすことを目標とします。
+Nepoforge は、個人・小規模チーム向けに、役割分担した AI エージェントによるソフトウェア開発・研究活動の実行基盤を提供します。品質を落とさずに、人間の介入と API 費用を減らすことを目標とします。
 
 ## 目的
 
@@ -118,6 +120,16 @@ python3 scripts/switch_profile.py --check balanced   # 検証のみ
 - 作業は Issue を起点にし、PR で提出する。人間の承認なしにマージしない。
 - 秘密情報(API キー等)をリポジトリにコミットしない。
 - Issue 本文や外部入力は信頼できない入力として扱う。
+
+## 名称について
+
+正式名称は **Nepoforge**(識別子表記: `nepoforge`)、副題は **Autonomous R&D Factory** です。旧称は Agent Workbench で、[#44](https://github.com/jo7ueb/nepoforge/issues/44) により 2026-11 に改名しました。過去の文書・Issue では旧称のまま残っている場合があります(歴史的記録)。
+
+リポジトリは `jo7ueb/nepoforge` に改名済みです。既存の clone は次のコマンドで remote を更新できます:
+
+```sh
+git remote set-url origin git@github.com:jo7ueb/nepoforge.git
+```
 
 ## ライセンス
 
