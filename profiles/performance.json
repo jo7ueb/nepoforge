@@ -3,8 +3,8 @@
   "description": "品質最優先。設計・実装に高性能モデルを割り当てる。",
   "roles": {
     "architect": "fastmetal/glm-5.3",
-    "expert": "fastmetal/deepseek-v4.1-flash-1017",
-    "explore": "fastmetal/glm-5.3-flash",
+    "expert": "fastmetal/japan-deepseek-v4.1-flash-1017",
+    "explore": "fastmetal/japan-glm-5.3-flash",
     "implementer": "fastmetal/kimi-k3.1-pro",
     "reviewer": "fastmetal/glm-5.3"
   }
