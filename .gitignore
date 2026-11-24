@@ -14,3 +14,6 @@ Thumbs.db
 # ローカル実行データ (Phase 2 の #12 で記録場所を正式定義)
 runs/
 *.log
+
+# 個人上書きプロファイル (#6)。グローバル設定 (~/.config/opencode) は変更しない。
+profiles/local.json
