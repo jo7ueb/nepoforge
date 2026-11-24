@@ -77,11 +77,17 @@ class TestLifecycle(IsolatedEnv):
         # enable はリポジトリにエージェント等を複製しない
         self.assertFalse((repo1 / ".opencode" / "agents").exists())
 
-        # update: 共通更新が一度で両方に反映される
-        template = store.TEMPLATE_DIR / "guardrail.jsonc"
-        original = template.read_text(encoding="utf-8")
+        # update: 共通更新が一度で両方に反映される (テンプレートは実ツリーを
+        # 書き換えず、一時コピーに差し替えて「新しいパッケージ」を再現する)
+        import tempfile
+
+        original_template = cli.GUARDRAIL_TEMPLATE
+        original_text = original_template.read_text(encoding="utf-8")
         try:
-            template.write_text(original.replace("#47", "#47 revised"), encoding="utf-8")
+            with tempfile.NamedTemporaryFile("w", suffix=".jsonc", delete=False) as tf:
+                tf.write(original_text.replace("#47", "#47 revised"))
+                revised = Path(tf.name)
+            cli.GUARDRAIL_TEMPLATE = revised
             self.cd(repo1)
             self.assertEqual(cli.main(["update"]), 0)
             text1 = (repo1 / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
@@ -90,7 +96,8 @@ class TestLifecycle(IsolatedEnv):
             self.assertEqual(cli.main(["update"]), 0)
             self.assertIn("#47 revised", (repo2 / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8"))
         finally:
-            template.write_text(original, encoding="utf-8")
+            cli.GUARDRAIL_TEMPLATE = original_template
+            revised.unlink(missing_ok=True)
 
         # doctor (サンドボックスには provider・認証が無いため全体の終了コードは
         # 環境依存になる。個別のチェック行を検証する)
@@ -130,7 +137,7 @@ class TestLifecycle(IsolatedEnv):
     def test_update_requires_init(self) -> None:
         with self.assertRaises(SystemExit) as cm:
             cli.main(["update"])
-        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(cm.exception.code, 1)
 
     def test_conflict_existing_user_agent_file(self) -> None:
         target = store.opencode_dir() / "agents"
@@ -156,6 +163,31 @@ class TestLifecycle(IsolatedEnv):
         backups = list(store.backup_root().rglob("architect.md"))
         self.assertEqual(len(backups), 1)
         self.assertEqual(backups[0].read_text(), "user tweak\n")
+
+    def test_package_update_is_not_user_modification(self) -> None:
+        """パッケージ更新 (updatable) は --force 不要で正規に update できる (#47 レビュー指摘 2)。"""
+        self.assertEqual(cli.main(["init"]), 0)
+        agent = store.opencode_dir() / "agents" / "architect.md"
+        # パッケージ同梱ファイルだけを差し替えて「新しいパッケージ」を再現する
+        # (render は model 行しか触らないため、本文を変えて差分を作る)
+        before = agent.read_text(encoding="utf-8")
+        data_agent = store.DATA_DIR / "agents" / "architect.md"
+        data_backup = data_agent.read_text(encoding="utf-8")
+        try:
+            data_agent.write_text(data_backup.replace("description: 調査結果から設計をまとめる。", "description: (v2) 調査結果から設計をまとめる。"), encoding="utf-8")
+            status = io.StringIO()
+            with contextlib.redirect_stdout(status):
+                cli.main(["status"])
+            self.assertIn("update available", status.getvalue())
+            # --force 無しで update が成功し、新しいパッケージ内容に同期される
+            self.assertEqual(cli.main(["update"]), 0)
+            self.assertIn("(v2)", agent.read_text(encoding="utf-8"))
+            status2 = io.StringIO()
+            with contextlib.redirect_stdout(status2):
+                cli.main(["status"])
+            self.assertNotIn("update available", status2.getvalue())
+        finally:
+            data_agent.write_text(data_backup, encoding="utf-8")
 
     def test_uninstall_refuses_while_projects_enabled(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
@@ -241,6 +273,45 @@ class TestProvider(IsolatedEnv):
         self.assertIn('"model": "other/model"', text)
         self.assertIn("user comment", text)
         self.assertIn("fastmetal", text)
+        # 書き込み結果が有効な JSONC として再パースできる (レビュー指摘 1)
+        from nepoforge import jsonc
+
+        self.assertIn("fastmetal", jsonc.loads(text)["providers"])
+
+    def test_insertion_with_trailing_comma_member(self) -> None:
+        config = store.opencode_dir() / "opencode.jsonc"
+        config.parent.mkdir(parents=True)
+        config.write_text(
+            '{\n  "$schema": "https://opencode.ai/config.json",\n'
+            '  "model": "other/model",\n}\n',
+            encoding="utf-8",
+        )
+        self.assertEqual(cli.main(["init", "--provider", "fastmetal"]), 0)
+        from nepoforge import jsonc
+
+        self.assertIn("fastmetal", jsonc.loads(config.read_text(encoding="utf-8"))["providers"])
+
+    def test_unverifiable_insertion_writes_nothing(self) -> None:
+        """挿入結果が検証できない入力では、書き込まずに停止する (レビュー指摘 1)。"""
+        config = store.opencode_dir() / "opencode.jsonc"
+        config.parent.mkdir(parents=True)
+        # 文字列リテラル内の // や、解析を壊す入力
+        broken = '{\n  "a": "x",\n  "b": [1, 2\n}\n'  # 配列が未閉鎖
+        config.write_text(broken, encoding="utf-8")
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["init", "--provider", "fastmetal"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(config.read_text(), broken)
+
+    def test_strict_json_file_is_refused(self) -> None:
+        """.json はコメント非対応のため書き換えず手動手順を案内する (レビュー指摘 1)。"""
+        config = store.opencode_dir() / "opencode.json"
+        config.parent.mkdir(parents=True)
+        config.write_text('{"model": "other/model"}\n', encoding="utf-8")
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["init", "--provider", "fastmetal"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(config.read_text(), '{"model": "other/model"}\n')
 
     def test_existing_fastmetal_is_noop(self) -> None:
         self.assertEqual(cli.main(["init", "--provider", "fastmetal"]), 0)

@@ -4,6 +4,7 @@
     "providers": {
       "fastmetal": {
         "name": "FastMetal",
+        "env": ["FASTMETAL_API_KEY"],
         "package": "@opencode/ai/providers/openai-compatible",
         "settings": {
           "baseURL": "https://api.fastmetal.ai/v1"

@@ -22,7 +22,7 @@ from typing import NoReturn
 
 from platformdirs import user_config_dir, user_state_dir
 
-VERSION = "0.2.0"
+from . import __version__ as VERSION
 
 # パッケージ同梱の配布物の正本 (#47 §4.1)。
 DATA_DIR = Path(__file__).resolve().parent / "data"
@@ -106,12 +106,16 @@ def load_manifest(path: Path) -> dict | None:
 
 
 def classify(target: Path, manifest: dict | None, expected: dict[str, str | None]) -> dict[str, str]:
-    """各管理対象ファイルの状態を分類する (nf_workbench.py と同じ語彙)。
+    """各管理対象ファイルの状態を分類する (#9 の語彙に updatable を追加)。
 
-    expected は「現時点で対象にあるべき内容」のハッシュ (プロファイル適用後など)。
+    expected は「現行パッケージ + 現行プロファイルであるべき内容」のハッシュ。
+    改変判定はマニフェスト記録との比較のみで行う (設計 0003 §6)。expected と
+    の相違はパッケージ更新由来の正規の差分であり、updatable として別扱いする:
     - missing     : 対象に存在しない
-    - unchanged   : あるべき内容と一致 (導入済みで無改変)
-    - modified    : 存在するが、あるべき内容と一致しない
+    - unchanged   : マニフェスト記録と一致し、現行パッケージとも一致 (最新)
+    - updatable   : マニフェスト記録と一致するが、現行パッケージと異なる
+                    (パッケージ更新後の正規の更新対象。--force 不要)
+    - modified    : 存在するがマニフェスト記録と一致しない (利用者改変の疑い)
     - conflict    : 存在するがマニフェストに記録がない (非管理ファイル)
     """
     state: dict[str, str] = {}
@@ -121,10 +125,12 @@ def classify(target: Path, manifest: dict | None, expected: dict[str, str | None
             state[rel] = "missing"
         elif manifest is None or rel not in manifest.get("files", {}):
             state[rel] = "conflict"
-        elif manifest["files"][rel] == current:
-            state[rel] = "unchanged" if current == expected[rel] else "modified"
-        else:
+        elif manifest["files"][rel] != current:
             state[rel] = "modified"
+        elif expected[rel] != current:
+            state[rel] = "updatable"
+        else:
+            state[rel] = "unchanged"
     return state
 
 
@@ -142,14 +148,19 @@ def backup_file(target: Path, rel: str) -> Path | None:
 
 def diff_text(old: Path | None, new: Path) -> str:
     """既存ファイルと配布物の差分 (unified diff) を返す。"""
-    new_text = new.read_text(encoding="utf-8").splitlines(keepends=True)
+    return diff_text_vs(old, new.read_text(encoding="utf-8"), str(new))
+
+
+def diff_text_vs(old: Path | None, new_text: str, new_label: str = "new") -> str:
+    """既存ファイルとテキスト (中間ファイルを作らない) の差分を返す。"""
+    new_lines = new_text.splitlines(keepends=True)
     if old is not None and old.is_file():
-        old_text = old.read_text(encoding="utf-8").splitlines(keepends=True)
+        old_lines = old.read_text(encoding="utf-8").splitlines(keepends=True)
         label = str(old)
     else:
-        old_text = []
+        old_lines = []
         label = "/dev/null"
-    return "".join(difflib.unified_diff(old_text, new_text, fromfile=label, tofile=str(new)))
+    return "".join(difflib.unified_diff(old_lines, new_lines, fromfile=label, tofile=new_label))
 
 
 def write_json(path: Path, data: dict) -> None:
@@ -173,7 +184,7 @@ def store_write_manifest(profile_name: str, files: dict[str, str]) -> None:
 
 
 def load_projects() -> list[dict]:
-    """中央の有効化済みプロジェクト記録を読む。無ければ空。"""
+    """中央の有効化済みプロジェクト記録を読む。無ければ空。壊れていれば停止。"""
     path = projects_path()
     if not path.is_file():
         return []
@@ -181,7 +192,10 @@ def load_projects() -> list[dict]:
         data = json.loads(path.read_text(encoding="utf-8"))
     except json.JSONDecodeError as exc:
         fail(f"projects record is broken: {path} ({exc})")
-    return list(data.get("projects", []))
+    projects = data.get("projects") if isinstance(data, dict) else None
+    if not isinstance(projects, list) or any(not isinstance(p, dict) for p in projects):
+        fail(f"projects record is broken: {path} ('projects' must be a list of objects)")
+    return list(projects)
 
 
 def save_projects(projects: list[dict]) -> None:

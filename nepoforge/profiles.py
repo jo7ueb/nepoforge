@@ -76,12 +76,10 @@ def apply_to_agent(agent_id: str, text: str, model: str) -> str:
     lines = text.splitlines(keepends=True)
     if not lines or lines[0].strip() != "---":
         raise NepoforgeError(f"agent file has no frontmatter: agents/{agent_id}.md")
-    depth = 0
     replaced = False
     for i, line in enumerate(lines[1:], start=1):
         if line.strip() == "---":
             break
-        depth += 1
         if MODEL_LINE_RE.match(line):
             lines[i] = f"model: {model}\n"
             replaced = True

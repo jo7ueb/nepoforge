@@ -12,9 +12,12 @@ Nepoforge を配布可能なパッケージとして整備し、PATH 上の `nep
 
 ## 2. 決定事項 (ユーザー承認済み)
 
-1. **パッケージ方式**: Python (標準ライブラリのみ) + `pyproject.toml`。
+1. **パッケージ方式**: Python + `pyproject.toml` (entry point `nepoforge`)。
    `uv tool install git+...` / `pipx install git+...` / `pip install --user`
-   で導入し、entry point `nepoforge` を PATH に置く。依存はゼロ。
+   で導入する。依存は最小限に抑え、**既製品の `json5` (JSONC 解析) と
+   `platformdirs` (XDG パス解決) のみ**を使う — 実装開始後にユーザーの指示で
+   「既製品で済む部分は手作りしない」方針に改訂した (当初は標準ライブラリのみ
+   を予定していた)。独自パーサのバグリスクを避けるのが主な理由。
 2. **guardrail (permissions) の配置**: プロジェクト単位の明示的有効化のみ。
    グローバル常時適用はしない (理由は §4.3)。
 3. **provider 設定**: `nepoforge init --provider fastmetal` が、既存の
@@ -189,11 +192,13 @@ nepoforge profile use NAME | list | show [NAME] [--dry-run]
 ## 9. テスト計画 (API 課金なし)
 
 - 単体 (stdlib unittest, `python3 -m unittest discover -s tests`):
-  - JSONC パーサ (コメント・文字列内 `//`・trailing comma)
-  - マニフェスト分類 (missing/unchanged/modified/conflict)
+  - JSONC 読み込み (`json5` ラッパ: コメント・trailing comma・文字列内
+    マーカーの保護・壊れた入力のエラー)
+  - provider 追記のテキスト操作 (同行コメント・trailing comma・
+    書き込み前の再パース検証・`.json` 対象の拒否)
+  - マニフェスト分類 (missing/unchanged/updatable/modified/conflict)
   - プロファイル適用 (model 行差し替え・不明モデル・不正表記)
   - enable/disable/dry-run/衝突停止/旧マニフェスト検出
-  - provider 追記 (未定義/既定義済み/providers あり fastmetal なし/壊れた JSONC)
   - data とリポジトリ `.opencode` の同期検証 (model 行を除く)
 - 統合 (実機・サンドボックス): `XDG_CONFIG_HOME`/`XDG_STATE_HOME` を
   一時ディレクトリに向け、init → status → profile use → enable (別リポジトリ
@@ -212,3 +217,4 @@ nepoforge profile use NAME | list | show [NAME] [--dry-run]
 | Node.js / Go での再実装 | 既存 Python 実装の再利用が目的に反し、依存が増える |
 | curl \| bash インストーラ | issue が明示的に排除 |
 | グローバル設定の全面管理 (model 等を CLI が書く) | 利用者所有の設定を破壊するリスク。frontmatter で代替可能 |
+| 独自 JSONC パーサ・XDG パス解決の自作 | 既製品 (`json5`, `platformdirs`) で十分。手作りはバグリスク (ユーザー指示により改訂) |

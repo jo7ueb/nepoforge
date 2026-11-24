@@ -31,9 +31,6 @@ from .store import (
 GUARDRAIL_TEMPLATE = store.TEMPLATE_DIR / "guardrail.jsonc"
 PROVIDER_TEMPLATE = store.TEMPLATE_DIR / "provider-fastmetal.jsonc"
 
-STATE = "missing   unchanged  modified   conflict"
-FILE_COLS = 12
-
 
 # ---------------------------------------------------------------------------
 # 共通ヘルパー
@@ -94,6 +91,8 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
     for rel, kind in state.items():
         if kind == "missing":
             plan.append(("write", rel))
+        elif kind == "updatable":
+            plan.append(("update", rel))
         elif kind == "modified":
             if not force:
                 print("conflict: 管理対象ファイルが利用者によって変更されているため停止しました:", file=sys.stderr)
@@ -107,10 +106,7 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
         if manifest.get("version") == store.VERSION and manifest.get("profile") == profile_name:
             print(f"up to date (version {manifest.get('version')}, profile {profile_name}). nothing to do")
             return 0
-        print(f"already installed (version {manifest.get('version')}); refreshing manifest only")
-
-    if not plan:
-        print("nothing to install")
+        print(f"already installed (version {manifest.get('version')}); refreshing manifest")
     for action, rel in plan:
         print(f"  [{action:6}] {config_dir / rel}")
     if dry_run:
@@ -145,23 +141,30 @@ def cmd_init(args: argparse.Namespace) -> int:
 def cmd_update(args: argparse.Namespace) -> int:
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
-        fail(f"not installed (no manifest: {store.manifest_path()}). run 'nepoforge init' first")
+        return not_installed("update")
     result = sync_global(manifest.get("profile", "balanced"), args.force, args.dry_run)
-    if args.no_projects or args.dry_run:
+    if args.no_projects:
         return result
-    return sync_projects(args.force)
+    return sync_projects(args.force, args.dry_run)
 
 
 # ---------------------------------------------------------------------------
 # 有効化済みプロジェクトの同期
 
 
-def sync_projects(force: bool) -> int:
+def not_installed(command: str) -> int:
+    """未導入時の終了 (設計 0003 §5: 終了コード 1)。"""
+    print(f"error: not installed (no manifest: {store.manifest_path()}). run 'nepoforge init' first", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def sync_projects(force: bool, dry_run: bool = False) -> int:
     """guardrail テンプレートを有効化済みプロジェクトへ再配布する (#47 §5 update)。"""
     projects = store.load_projects()
     if not projects:
         return 0
     template = GUARDRAIL_TEMPLATE.read_text(encoding="utf-8")
+    template_hash = sha256_text(template)
     remaining: list[dict] = []
     stopped = False
     for entry in projects:
@@ -175,8 +178,12 @@ def sync_projects(force: bool) -> int:
         if pm is None or pm.get("kind") != "project":
             print(f"  [skip    ] {root} (プロジェクト マニフェストがないため触れません)")
             continue
+        recorded = pm.get("files", {})
         current = store.sha256_of(config)
         if current is None:
+            if dry_run:
+                print(f"  [missing ] {config} (再配布予定)")
+                continue
             print(f"  [missing ] {config} (再配布します)")
             config.parent.mkdir(parents=True, exist_ok=True)
             config.write_text(template, encoding="utf-8")
@@ -184,11 +191,15 @@ def sync_projects(force: bool) -> int:
             store.write_json(root / PROJECT_MANIFEST_PATH, pm)
             print(f"  [updated ] {config}")
             continue
-        if pm["files"].get(PROJECT_CONFIG_PATH) == current:
-            if current == sha256_text(template):
+        if recorded.get(PROJECT_CONFIG_PATH) == current:
+            if current == template_hash:
                 print(f"  [ok      ] {root}")
                 continue
-            # テンプレート更新後の初回同期
+            action = "would update" if dry_run else "update"
+            if dry_run:
+                print(f"  [plan    ] {config} ({action})")
+                print(store.diff_text_vs(config, template, str(config)), end="")
+                continue
             backup = store.backup_file(root, PROJECT_CONFIG_PATH)
             if backup:
                 print(f"  [backup  ] {config} -> {backup}")
@@ -202,6 +213,9 @@ def sync_projects(force: bool) -> int:
             print(f"  [modified] {config} (利用者変更があるため停止。--force でバックアップ後に上書き)")
             stopped = True
             continue
+        if dry_run:
+            print(f"  [plan    ] {config} (改変をバックアップ後に上書き予定: --force)")
+            continue
         backup = store.backup_file(root, PROJECT_CONFIG_PATH)
         if backup:
             print(f"  [backup  ] {config} -> {backup}")
@@ -209,7 +223,8 @@ def sync_projects(force: bool) -> int:
         pm["files"] = {PROJECT_CONFIG_PATH: store.sha256_of(config)}
         store.write_json(root / PROJECT_MANIFEST_PATH, pm)
         print(f"  [updated ] {config}")
-    store.save_projects(remaining)
+    if not dry_run:
+        store.save_projects(remaining)
     if stopped:
         fail("user-modified guardrail(s) found. resolve them and re-run")
     return 0
@@ -249,7 +264,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"installed: version {manifest.get('version')} at {manifest.get('installed_at')}")
     print(f"profile:   {manifest.get('profile')}")
     print_state(state)
-    newer = [rel for rel, kind in state.items() if kind == "unchanged" and expected[rel] != manifest["files"].get(rel)]
+    newer = [rel for rel, kind in state.items() if kind == "updatable"]
     if newer:
         print("update available: run 'nepoforge update'")
         for rel in newer:
@@ -262,19 +277,25 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def remove_project_installation(root: Path, force: bool, dry_run: bool) -> bool:
-    """プロジェクト側の管理対象 (guardrail) を撤去する。改変時は既定で残す。"""
+    """プロジェクト側の管理対象 (guardrail) を撤去する。改変時は既定で残す。
+
+    戻り値は「管理記録を撤去できる状態になったか」。
+    利用者改変を既定で残した場合は記録 (マニフェスト・中央記録) も残す。
+    """
     pm = store.load_manifest(root / PROJECT_MANIFEST_PATH)
     if pm is None or pm.get("kind") != "project":
         print(f"  [skip    ] {root} (Nepoforge のプロジェクト マニフェストがないため触れません)")
         return True
     config = root / PROJECT_CONFIG_PATH
     current = store.sha256_of(config)
+    kept = False
     if current is None:
         pass
-    elif pm["files"].get(PROJECT_CONFIG_PATH) != current and not force:
+    elif pm.get("files", {}).get(PROJECT_CONFIG_PATH) != current and not force:
         print(f"  [kept    ] {config} (利用者が変更しているため残しました。不要なら手動で削除してください)")
+        kept = True
     else:
-        if pm["files"].get(PROJECT_CONFIG_PATH) != current:
+        if pm.get("files", {}).get(PROJECT_CONFIG_PATH) != current:
             backup = store.backup_file(root, PROJECT_CONFIG_PATH)
             if backup:
                 print(f"  [backup  ] {config} -> {backup}")
@@ -283,8 +304,8 @@ def remove_project_installation(root: Path, force: bool, dry_run: bool) -> bool:
         else:
             config.unlink()
             print(f"  [removed ] {config}")
-    if dry_run:
-        return True
+    if dry_run or kept:
+        return not kept
     (root / PROJECT_MANIFEST_PATH).unlink(missing_ok=True)
     store.forget_project(root)
     return True
@@ -293,7 +314,7 @@ def remove_project_installation(root: Path, force: bool, dry_run: bool) -> bool:
 def cmd_uninstall(args: argparse.Namespace) -> int:
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
-        fail(f"not installed (no manifest: {store.manifest_path()})")
+        return not_installed("uninstall")
     config_dir = store.opencode_dir()
     projects = store.load_projects()
     if projects and not args.projects and not args.dry_run:
@@ -406,7 +427,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     pm = store.load_manifest(project_root / PROJECT_MANIFEST_PATH)
     if pm is not None and pm.get("kind") == "project":
         current = store.sha256_of(pconf)
-        intact = current is not None and current == pm["files"].get(PROJECT_CONFIG_PATH)
+        intact = current is not None and current == pm.get("files", {}).get(PROJECT_CONFIG_PATH)
         checks.append(("guardrail enabled (this project)", intact, str(pconf) if intact else f"{pconf} is missing or modified"))
     else:
         checks.append(("guardrail enabled (this project)", False, "not enabled here. run 'nepoforge enable' (optional)"))
@@ -446,11 +467,16 @@ def load_project_manifest(root: Path) -> dict | None:
             "(python3 scripts/nf_workbench.py uninstall or the installed copy), then 'nepoforge enable'. "
             "see docs/design/0003-package-cli.md §8"
         )
+    if not isinstance(pm.get("files"), dict):
+        fail(f"manifest is broken ('files' mapping missing): {root / PROJECT_MANIFEST_PATH}")
     return pm
 
 
 def cmd_enable(args: argparse.Namespace) -> int:
     root = store.find_project_root()
+    for sibling in ("opencode.json", "opencode.jsonc"):
+        if sibling != PROJECT_CONFIG_PATH.rsplit("/", 1)[1] and (root / sibling).is_file():
+            print(f"warning: 既存の {root / sibling} が OpenCode に読み込まれます。guardrail とマージされます (無効化はされません)")
     config = root / PROJECT_CONFIG_PATH
     pm = load_project_manifest(root)
     template = GUARDRAIL_TEMPLATE.read_text(encoding="utf-8")
@@ -538,7 +564,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
     # use
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
-        fail(f"not installed (no manifest: {store.manifest_path()}). run 'nepoforge init' first")
+        return not_installed("profile use")
     config_dir = store.opencode_dir()
     prof = profiles.load_profile(args.name)
     expected = {rel: sha256_text(profiles.render(rel, prof)) for rel in USER_MANAGED_FILES}
@@ -549,7 +575,13 @@ def cmd_profile(args: argparse.Namespace) -> int:
         for rel in conflicts:
             print(f"  [conflict] {config_dir / rel}", file=sys.stderr)
         raise SystemExit(2)
-    changes = [rel for rel, kind in state.items() if kind in ("missing", "modified")]
+    modified = [rel for rel, kind in state.items() if kind == "modified"]
+    if modified and not args.force:
+        print("conflict: 管理対象ファイルが利用者によって変更されているため停止しました:", file=sys.stderr)
+        for rel in modified:
+            print(f"  [modified] {config_dir / rel} (変更を退避するか、--force でバックアップ後に上書き)", file=sys.stderr)
+        raise SystemExit(2)
+    changes = [rel for rel, kind in state.items() if kind in ("missing", "updatable", "modified")]
     if not changes:
         print(f"profile is already '{args.name}'")
         return 0
@@ -581,6 +613,12 @@ def apply_provider(dry_run: bool) -> None:
         config_dir / "opencode.jsonc",
     )
     if config_file.is_file():
+        if config_file.suffix == ".json":
+            fail(
+                f"{config_file} is strict JSON. comments in the FastMetal block would break it. "
+                "add the provider manually (template: nepoforge/data/templates/provider-fastmetal.jsonc) "
+                "or rename the file to opencode.jsonc"
+            )
         text = config_file.read_text(encoding="utf-8")
         try:
             data = jsonc.loads(text)
@@ -600,13 +638,24 @@ def apply_provider(dry_run: bool) -> None:
             fail(f"{config_file} is not a JSON object. refusing to edit")
 
         new_text = insert_provider_block(text)
+        # 書き込み前に結果を検証する (壊れた設定を成功として書かない)
+        try:
+            parsed = jsonc.loads(new_text)
+        except NepoforgeError as exc:
+            fail(
+                f"auto-insertion would produce invalid JSONC for {config_file} ({exc}). "
+                "no changes were made. add the fastmetal block manually "
+                "(template: nepoforge/data/templates/provider-fastmetal.jsonc)"
+            )
+        if not isinstance(parsed, dict) or "fastmetal" not in (parsed.get("providers") or {}):
+            fail(f"auto-insertion could not be verified for {config_file}. no changes were made")
     else:
         block = dedent_two(PROVIDER_TEMPLATE.read_text(encoding="utf-8").rstrip("\n"))
         new_text = '{\n  "$schema": "https://opencode.ai/config.json",\n' + block + "\n}\n"
 
     if dry_run:
         print(f"[dry-run] would add FastMetal provider to: {config_file}")
-        print(store.diff_text(config_file if config_file.is_file() else None, _as_tmp_file(new_text, config_file.suffix)), end="")
+        print(store.diff_text_vs(config_file if config_file.is_file() else None, new_text, str(config_file)), end="")
         print("dry-run: no changes made")
         return
     backup = store.backup_file(config_dir, config_file.name)
@@ -618,31 +667,57 @@ def apply_provider(dry_run: bool) -> None:
     print("認証は既存の仕組みを使ってください (例: export FASTMETAL_API_KEY=... )。キーを設定ファイルに書かないこと。")
 
 
+def _comment_start(line: str) -> int | None:
+    """行内で文字列リテラルの外側にある最初の `//` の位置を返す (無ければ None)。"""
+    in_string = False
+    escaped = False
+    for i, ch in enumerate(line):
+        if escaped:
+            escaped = False
+            continue
+        if in_string:
+            if ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
+            return i
+    return None
+
+
 def insert_provider_block(text: str) -> str:
-    """ルートオブジェクトの閉じ括弧直前に provider ブロックを挿入した全文を返す。"""
+    """ルートオブジェクトの閉じ括弧直前に provider ブロックを挿入した全文を返す。
+
+    末尾メンバーの後ろに同行コメントがあってもカンマをコメントの前に置き、
+    trailing comma が既にあれば追加しない。結果の検証は呼び出し側で行う。
+    """
     stripped = text.rstrip()
     if not stripped.endswith("}"):
-        raise NepoforgeError(f"config does not end with '}}'. refusing to edit")
+        raise NepoforgeError("config does not end with '}'. refusing to edit")
     head = stripped[:-1].rstrip()
-    needs_comma = not head.endswith("{")
-    block = PROVIDER_TEMPLATE.read_text(encoding="utf-8").rstrip("\n")
-    joined = head
+    lines = head.split("\n")
+    last = lines[-1]
+    cut = _comment_start(last)
+    trailing_comment = ""
+    if cut is not None:
+        trailing_comment = last[cut:].strip()
+        last = last[:cut].rstrip()
+    base = "\n".join(lines[:-1] + [last]).rstrip()
+    needs_comma = bool(base) and not base.endswith(",") and not base.endswith("{")
     if needs_comma:
-        joined += ","
-    joined += "\n" + block + "\n}\n"
+        base += ","
+    joined = base
+    if trailing_comment:
+        joined += " " + trailing_comment
+    joined += "\n" + PROVIDER_TEMPLATE.read_text(encoding="utf-8").rstrip("\n") + "\n}\n"
     return joined
 
 
 def dedent_two(text: str) -> str:
     return "\n".join(line[2:] if line.startswith("  ") else line for line in text.splitlines())
-
-
-def _as_tmp_file(text: str, suffix: str) -> Path:
-    import tempfile
-
-    tmp = Path(tempfile.mkstemp(suffix=suffix)[1])
-    tmp.write_text(text, encoding="utf-8")
-    return tmp
 
 
 # ---------------------------------------------------------------------------
@@ -702,6 +777,7 @@ def build_parser() -> argparse.ArgumentParser:
     puse = pprofile.add_parser("use", help="プロファイルを適用する")
     puse.add_argument("name")
     puse.add_argument("--dry-run", action="store_true")
+    puse.add_argument("--force", action="store_true", help="利用者が改変した管理対象をバックアップ後に上書きする")
     p.set_defaults(fn=cmd_profile)
 
     return parser

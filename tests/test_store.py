@@ -30,7 +30,12 @@ class TestClassify(IsolatedEnv):
         self.assertEqual(state["agents/a.md"], "unchanged")
         self.assertEqual(state["agents/b.md"], "missing")
 
-        # あるべき内容 (expected) と異なれば modified
+        # パッケージ更新由来の正規の差分 = updatable (--force 不要)
+        expected2 = dict(expected, **{"agents/a.md": "newhash"})
+        state = store.classify(target, manifest, expected2)
+        self.assertEqual(state["agents/a.md"], "updatable")
+
+        # マニフェスト記録と一致しない = 利用者改変 (modified)
         (target / "agents/a.md").write_text("changed\n")
         state = store.classify(target, manifest, expected)
         self.assertEqual(state["agents/a.md"], "modified")
