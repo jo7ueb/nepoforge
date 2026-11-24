@@ -15,10 +15,10 @@ flowchart TB
     User[人間] -->|Issue 起点の指示 / PR 承認| GitHub[GitHub<br>Issues / Pull Requests]
     User -->|プロファイル選択・上書き| Config[設定<br>profiles / roles]
     GitHub -->|Issue| Engine
-    Engine[実行エンジン<br>OpenCode 標準機能] -->|task 委譲| R1[architect]
-    Engine -->|task 委譲| R2[expert / explore]
-    Engine -->|task 委譲| R3[implementer]
-    Engine -->|task 委譲| R4[reviewer]
+    Engine[実行エンジン<br>OpenCode 標準機能] -->|subagent 委譲| R1[architect]
+    Engine -->|subagent 委譲| R2[expert / explore]
+    Engine -->|subagent 委譲| R3[implementer]
+    Engine -->|subagent 委譲| R4[reviewer]
     R1 & R2 & R3 & R4 -->|モデル指定| Provider[LLM プロバイダー<br>FastMetal / 他]
     Engine -->|成果物| GitHub
     R4 -->|レビュー結果| Engine
@@ -40,6 +40,14 @@ flowchart TB
 - プロンプトからモデル名を参照しない。モデル選択はプロファイルを経由する。
 - 役割定義からワークフローを参照しない。委譲時の入出力契約だけを定める。
 - 実行エンジン固有の書き方はワークフロー定義から分離した場所に置く(§7)。
+
+### 3.1 委譲と並列実行
+
+1. 委譲の集約先は primary とし、役割 (subagent) 間の再委譲は行わない。`experimental.subagent_depth` は使用しない (調査報告 0002 §4.3)。
+2. 子は自分に設定された権限・モデルで動く。権限は各役割定義のとおり最小に保つ。
+3. 独立した委譲は並列に起動してよい。逐次とするのは依存・競合・資源制約がある場合のみ。並列数の公式上限がないため、同時起動数はワークフロー側で抑制する。
+4. 子の報告は最後の text 応答のみ。idle ごとの中間報告 (state=running) を完了とみなさない。
+5. 実行区間・トークンの計測は #12 の記録基盤で扱う。本節はポリシーのみ定める。
 
 ## 4. 設定優先順位
 
@@ -122,3 +130,4 @@ flowchart TB
 
 - Phase 0: 本文書の初期整備、README / ROADMAP / AGENTS.md の整備 (本 PR)。
 - Phase 1: #4 の調査結果に基づき、設定優先順位 (§4) と OpenCode 依存部分 (§7) を確定済み。5 職種のエージェント・モデルプロファイル・権限制御の実装と検証は [docs/design/0001](design/0001-agents-profiles-permissions.md) を参照。
+- #49: 単一 Issue 内の早期タスク分解と並列委譲を確定 (設計メモ 0004)。複数 Issue・複数プロジェクトの自律スケジューリングは #21/#31/#32。
