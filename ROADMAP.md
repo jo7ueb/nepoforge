@@ -77,3 +77,7 @@ Agent Workbench は、個人・小規模チーム向けに、役割分担した 
 
 - 各 Issue の「共通ルール」に従う: AGENTS.md と既存の規約を遵守し、検証結果・残存課題を PR に記録し、秘密情報はコミットしない。
 - 人間の承認なしに PR をマージしない。
+
+## 長期技術構想（着手未承認）
+
+[Autonomous R&D Factory — 長期技術構想](docs/design/factory-engineering-vision.md) に Loop Engineering、Graph Engineering、工場自体の継続的改善の方向性を記録する。現在の Phase・優先順位・実行承認は変更しない。
