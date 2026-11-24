@@ -131,3 +131,4 @@ flowchart TB
 - Phase 0: 本文書の初期整備、README / ROADMAP / AGENTS.md の整備 (本 PR)。
 - Phase 1: #4 の調査結果に基づき、設定優先順位 (§4) と OpenCode 依存部分 (§7) を確定済み。5 職種のエージェント・モデルプロファイル・権限制御の実装と検証は [docs/design/0001](design/0001-agents-profiles-permissions.md) を参照。
 - #49: 単一 Issue 内の早期タスク分解と並列委譲を確定 (設計メモ 0004)。複数 Issue・複数プロジェクトの自律スケジューリングは #21/#31/#32。
+- #53: タスク分解・並列委譲・モデル選択・レビューを貫く共通契約 (TaskSpec / ModelResolution / TaskResult / 状態規則) を確定 (設計メモ 0005)。後続の #49 → #52 → #51 は本設計のマージを先行ゲートとし、契約の変更は共通設計の改訂を先に行う。
