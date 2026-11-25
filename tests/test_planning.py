@@ -12,6 +12,7 @@ from nepoforge.planning import (
     PlanError,
     PlannedTask,
     conflicts,
+    normalize_scope,
     ready_tasks,
     scopes_conflict,
     validate_plan,
@@ -75,7 +76,7 @@ class TestValidatePlan(unittest.TestCase):
             [
                 PlannedTask("T1", "explore"),
                 PlannedTask("T2", "expert", depends_on=("T1",)),
-                PlannedTask("T3", "architect", depends_on=("T1",)),
+                PlannedTask("T3", "architect", depends_on=("T1",), write_scope=("docs/design/",)),
                 PlannedTask("T4", "implementer", depends_on=("T2", "T3"), write_scope=("nepoforge/",)),
             ]
         )
@@ -85,6 +86,44 @@ class TestValidatePlan(unittest.TestCase):
             with self.assertRaises(PlanError) as ctx:
                 validate_plan([PlannedTask("T1", role, write_scope=("docs/x.md",))])
             self.assertIn(role, str(ctx.exception))
+
+    def test_write_required_role_without_scope_rejected(self) -> None:
+        # architect / implementer は write_scope 必須 (0005 §4.1)
+        for role in ("architect", "implementer"):
+            with self.assertRaises(PlanError) as ctx:
+                validate_plan([PlannedTask("T1", role)])
+            self.assertIn("must declare write_scope", str(ctx.exception))
+
+    def test_architect_with_root_scope_ok(self) -> None:
+        # 計画外の編集をしない architect も、範囲を明示すれば通る
+        validate_plan([PlannedTask("T1", "architect", write_scope=("docs/",))])
+
+    def test_empty_write_scope_entry_rejected(self) -> None:
+        # 空文字は何とも競合しないため、範囲不明のまま走ってしまう
+        with self.assertRaises(PlanError) as ctx:
+            validate_plan([PlannedTask("T1", "implementer", write_scope=("",))])
+        self.assertIn("empty", str(ctx.exception))
+
+    def test_blank_write_scope_entry_rejected(self) -> None:
+        with self.assertRaises(PlanError):
+            validate_plan([PlannedTask("T1", "implementer", write_scope=("  ",))])
+
+    def test_deep_chain_does_not_recurse(self) -> None:
+        # 依存鎖が深くても再帰上限に当たらない
+        n = 2000
+        plan = [
+            PlannedTask(f"T{i}", "explore", depends_on=((f"T{i - 1}",) if i else ()))
+            for i in range(n)
+        ]
+        validate_plan(plan)
+
+    def test_deep_cycle_detected(self) -> None:
+        n = 2000
+        plan = [PlannedTask(f"T{i}", "explore", depends_on=(f"T{i + 1}",)) for i in range(n)]
+        plan.append(PlannedTask(f"T{n}", "explore", depends_on=("T0",)))
+        with self.assertRaises(PlanError) as ctx:
+            validate_plan(plan)
+        self.assertIn("cycle", str(ctx.exception))
 
     def test_implementer_with_write_scope_ok(self) -> None:
         validate_plan([PlannedTask("T1", "implementer", write_scope=("nepoforge/x.py",))])
@@ -117,6 +156,10 @@ class TestScopes(unittest.TestCase):
 
     def test_trailing_slash_treated_as_recursive(self) -> None:
         self.assertTrue(scopes_conflict("docs/", "docs/design/0007.md"))
+        self.assertTrue(scopes_conflict("docs/", "docs/a/b/c/d.md"))
+        # `docs/` は `docs` と同じく配下全体を指す
+        self.assertTrue(scopes_conflict("docs/", "docs/x.md"))
+        self.assertTrue(scopes_conflict("docs/", "docs*"))
 
     def test_ancestor_directory_conflicts(self) -> None:
         self.assertTrue(scopes_conflict("a/b", "a/b/c"))
@@ -135,6 +178,29 @@ class TestScopes(unittest.TestCase):
         self.assertTrue(scopes_conflict("src/*/test.py", "src/a/test.py"))
         self.assertFalse(scopes_conflict("src/*/test.py", "src/a/b/test.py"))
 
+    def test_double_star_matches_zero_segments(self) -> None:
+        # `**` は 0 階層も吸収する (変異テストで検出されなかった分岐)
+        self.assertTrue(scopes_conflict("src/**/test.py", "src/test.py"))
+
+    def test_both_wildcards_overlapping(self) -> None:
+        # 両方が glob で、互いの文字列にはマッチしないが同時に成立し得る
+        self.assertTrue(scopes_conflict("x/a*", "x/*b"))
+
+    def test_dotdot_normalized(self) -> None:
+        # `..` を畳まないと同じファイルへの書き込みを見逃す
+        self.assertTrue(scopes_conflict("docs/../nepoforge/", "nepoforge/"))
+        self.assertTrue(scopes_conflict("docs/../nepoforge/cli.py", "nepoforge/cli.py"))
+
+    def test_lone_wildcard_segment_covers_remaining_levels(self) -> None:
+        # `*` が指し得るディレクトリの配下は競合する
+        self.assertTrue(scopes_conflict("src/*", "src/a/b"))
+        self.assertTrue(scopes_conflict("src/a/*", "src/a/b/c"))
+
+    def test_single_star_does_not_skip_levels(self) -> None:
+        # `*` は 1 階層。深い側は越えられない
+        self.assertFalse(scopes_conflict("src/*/test.py", "src/a/b/test.py"))
+        self.assertTrue(scopes_conflict("src/*/test.py", "src/a/test.py"))
+
     def test_match_anything(self) -> None:
         self.assertTrue(scopes_conflict("*", "anything"))
 
@@ -147,6 +213,42 @@ class TestScopes(unittest.TestCase):
         ]
         for a, b in pairs:
             self.assertEqual(scopes_conflict(a, b), scopes_conflict(b, a), f"{a} vs {b}")
+
+
+    def test_review_regressions_in_both_orders(self) -> None:
+        for a, b in (
+            ("nepoforge/data", "nepoforge/*/cli.py"),
+            ("doc*/x.md", "docs/**"),
+            ("doc*/**/x.md", "docs/**"),
+            ("do*", "docs/x.md"),
+        ):
+            for left, right in ((a, b), (b, a)):
+                with self.subTest(left=left, right=right):
+                    self.assertTrue(scopes_conflict(left, right))
+
+    def test_recursive_globs_can_align_at_different_depths(self) -> None:
+        self.assertTrue(scopes_conflict("src/**/a/b", "src/a/**/b"))
+        self.assertTrue(scopes_conflict("src/**/a/**/b", "src/x/a/y/b"))
+        self.assertFalse(scopes_conflict("src/a/**/b", "src/x/**/b"))
+
+    def test_unresolved_parent_is_conservative(self) -> None:
+        self.assertTrue(scopes_conflict("docs/*/../x.md", "docs/x.md"))
+        self.assertTrue(scopes_conflict("../../x.md", "docs/x.md"))
+
+
+class TestNormalizeScope(unittest.TestCase):
+    def test_dot_segments_removed(self) -> None:
+        self.assertEqual(normalize_scope("./docs//x.md"), "docs/x.md")
+
+    def test_dotdot_folded(self) -> None:
+        self.assertEqual(normalize_scope("docs/../nepoforge/"), "nepoforge/")
+
+    def test_backslash_converted(self) -> None:
+        self.assertEqual(normalize_scope("docs\\x.md"), "docs/x.md")
+
+    def test_glob_segment_blocks_folding(self) -> None:
+        # glob の階層は実体が決まらないので畳まない
+        self.assertEqual(normalize_scope("docs/*/../x.md"), "docs/*/../x.md")
 
 
 class TestConflicts(unittest.TestCase):

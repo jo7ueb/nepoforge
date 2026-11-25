@@ -19,13 +19,18 @@ from __future__ import annotations
 import fnmatch
 from dataclasses import dataclass, field
 
+from .store import NepoforgeError
 
-class PlanError(ValueError):
+
+class PlanError(NepoforgeError):
     """計画が規則に違反している (起動前に拒否する)。"""
 
 
 # 書き込みを許さない役割 (#17 / #16)
 READ_ONLY_ROLES = frozenset({"expert", "explore", "reviewer"})
+
+# 書き込み範囲の宣言が必須の役割 (設計メモ 0005 §4.1)
+WRITE_REQUIRED_ROLES = frozenset({"architect", "implementer"})
 
 # 既定の並列上限 (設計メモ 0005 §4.4 規則 1)
 DEFAULT_MAX_PARALLEL = 10
@@ -41,122 +46,80 @@ class PlannedTask:
     write_scope: tuple[str, ...] = field(default_factory=tuple)
 
 
-def _scope_patterns(scope: str) -> tuple[str, ...]:
-    """scope の表記を比較用のパターン列にする。
+def normalize_scope(scope: str) -> str:
+    """scope の表記を比較用に正規化する。
 
-    `docs/**` と `docs/design/x.md` のような包含関係を見落とさないため、
-    ディレクトリ表記 (`docs/`) は再帰 glob (`docs/**`) として扱う。
+    `docs/../nepoforge/` と `nepoforge/` を別物として扱うと、同じファイルへの
+    同時書き込みを見逃す。lexical に `.` と `..` を畳む。glob を含む階層は
+    畳まない (どの実体を指すか決まらないため、比較時に競合側へ倒す)。
     """
-    text = scope.strip()
-    if not text:
-        return ()
-    if text.endswith("/"):
-        return (text + "**",)
-    return (text,)
-
-
-def _matches(a: str, b: str) -> bool:
-    """2 つの scope が同じファイルに触れ得るかを判定する。
-
-    どちらかが他方を包含する場合 (glob の包含関係) も競合とみなす。
-    """
-    # 直接の一致 (同じパターン、または一方が他方にマッチ)。
-    # glob の `*` はパス区切りをまたがない (fnmatch はまたぐため使わない)。
-    if a == b or _glob_match(a, b) or _glob_match(b, a):
-        return True
-    # 一方が他方のパス接頭辞 (祖先ディレクトリ) なら配下に触れ得る
-    if a.startswith(b.rstrip("/") + "/") or b.startswith(a.rstrip("/") + "/"):
-        return True
-    # ディレクトリ配下の包含: `x/**` は x 配下のすべてを包含する。
-    # `x/*` は直下だけなので、`x/**` のような再帰拡張はしない。
-    for pat, other in ((a, b), (b, a)):
-        if pat.endswith("/**"):
-            prefix = pat[:-3].rstrip("/")
-            if other == prefix or other.startswith(prefix + "/"):
-                return True
-            if _glob_match(other, prefix + "/**"):
-                return True
-    # 共通の祖先を持つ場合 (docs/a/** と docs/**/b.md など) は保守的に競合とみなす。
-    # また、一方が他方の祖先ディレクトリである場合 (`a/b` と `a/b/c`) は、
-    # 祖先側は配下のファイルに触れ得るため競合とする。
-    a_prefix = a.split("/", 1)[0]
-    b_prefix = b.split("/", 1)[0]
-    if a_prefix == b_prefix and ("/" in a) and ("/" in b):
-        return _overlap_roughly(a, b)
-    return False
-
-
-def _glob_match(path: str, pattern: str) -> bool:
-    """パス区切りをまたがない glob 一致 (path が pattern にマッチするか)。
-
-    `**` は任意の階層にマッチする。`*` / `?` / `[...]` は 1 階層内だけ。
-    """
-    p_parts = path.split("/")
-    g_parts = pattern.split("/")
-
-    def rec(i: int, j: int) -> bool:
-        if j == len(g_parts):
-            return i == len(p_parts)
-        token = g_parts[j]
-        if token == "**":
-            # 0 階層以上を吸収する
-            for k in range(i, len(p_parts) + 1):
-                if rec(k, j + 1):
-                    return True
-            return False
-        if i >= len(p_parts):
-            return False
-        if not fnmatch.fnmatchcase(p_parts[i], token):
-            return False
-        return rec(i + 1, j + 1)
-
-    return rec(0, 0)
-
-
-def _overlap_roughly(a: str, b: str) -> bool:
-    """glob を含む 2 パターンが共有し得るパスがあるかを保守的に判定する。
-
-    誤って「競合なし」と言うより、誤って「競合あり」と言う方が安全なので、
-    判定できない場合は競合として扱う。
-    """
-    a_parts = a.split("/")
-    b_parts = b.split("/")
-    for x, y in zip(a_parts, b_parts):
-        if x == y:
+    text = scope.strip().replace("\\", "/")
+    trailing_slash = text.endswith("/")
+    while text.startswith("./"):
+        text = text[2:]
+    parts = [p for p in text.split("/") if p not in ("", ".")]
+    out: list[str] = []
+    for part in parts:
+        if part == "..":
+            if out and out[-1] != ".." and not any(ch in out[-1] for ch in "*?["):
+                out.pop()
+            else:
+                out.append(part)
             continue
-        if fnmatch.fnmatchcase(x, y) or fnmatch.fnmatchcase(y, x):
-            continue
-        # 同じ階層で両方 glob でなければ、この位置で分岐する (兄弟)。
-        # 例: `x/*.md` と `x/sub/y.md` は `*.md` が `sub` にマッチしない。
-        x_glob = any(ch in x for ch in "*?[")
-        y_glob = any(ch in y for ch in "*?[")
-        if not x_glob and not y_glob:
-            return False
-        if x_glob and y_glob:
-            # 両方が glob の場合は一致し得る (例: `*.md` と `0*.md`)
-            return True
-        # 片方だけ glob。glob が「より深い層まで吸収できる」場合だけ競合と
-        # みなす。`*.md` は `sub` にはマッチしないので兄弟 (競合しない)。
-        i, j = a_parts.index(x), b_parts.index(y)
-        if x_glob:
-            rest = "/".join(b_parts[j:])
-            return _glob_match(rest, x if i == len(a_parts) - 1 else x)
-        rest = "/".join(a_parts[i:])
-        return _glob_match(rest, y)
-    # 共通接頭辞が尽きた。階層数が同じなら同じパスを指し得る。
-    if len(a_parts) != len(b_parts):
-        shorter = a_parts if len(a_parts) < len(b_parts) else b_parts
-        if not any(any(ch in p for ch in "*?[") for p in shorter):
-            return False
-    return True
+        out.append(part)
+    result = "/".join(out)
+    if trailing_slash and result:
+        return result + "/"
+    return result
+
+
+def _seg_overlap(a: str, b: str) -> bool:
+    """1 階層の比較。glob 同士は重なり得るものとして扱う。"""
+    a_glob = any(ch in a for ch in "*?[")
+    b_glob = any(ch in b for ch in "*?[")
+    if a_glob and b_glob:
+        return True
+    if a_glob:
+        return fnmatch.fnmatchcase(b, a)
+    if b_glob:
+        return fnmatch.fnmatchcase(a, b)
+    return a == b
 
 
 def scopes_conflict(a: str, b: str) -> bool:
-    """2 つの write_scope が競合するか。"""
-    for pa in _scope_patterns(a):
-        for pb in _scope_patterns(b):
-            if _matches(pa, pb):
-                return True
+    """2 つの write_scope が競合し得るか (論理パス、大文字小文字を区別)。
+
+    一致したパスはディレクトリかもしれないため、配下にも競合する。
+    `**` は 0 階層以上、それ以外の glob は 1 階層だけに一致する。
+    """
+    left = normalize_scope(a).rstrip("/").split("/")
+    right = normalize_scope(b).rstrip("/").split("/")
+    if not a.strip() or not b.strip():
+        return False
+    if left == [""] or right == [""] or ".." in left or ".." in right:
+        # ルート、または正規化しても範囲が確定しないパス。
+        return True
+
+    pending = [(0, 0)]
+    seen: set[tuple[int, int]] = set()
+    while pending:
+        i, j = pending.pop()
+        if (i, j) in seen:
+            continue
+        seen.add((i, j))
+        if i == len(left) or j == len(right):
+            return True  # 片方が同じパスまたは祖先まで一致した
+        x, y = left[i], right[j]
+        if x == "**":
+            pending.append((i + 1, j))  # 0 階層
+            if y != "**":
+                pending.append((i, j + 1))  # 1 階層消費し、** に留まる
+        if y == "**":
+            pending.append((i, j + 1))
+            if x != "**":
+                pending.append((i + 1, j))
+        if x != "**" and y != "**" and _seg_overlap(x, y):
+            pending.append((i + 1, j + 1))
     return False
 
 
@@ -182,6 +145,15 @@ def validate_plan(tasks: list[PlannedTask]) -> None:
             raise PlanError(
                 f"{task.task_id}: role {task.role} must not declare write_scope"
             )
+        if task.role in WRITE_REQUIRED_ROLES and not task.write_scope:
+            raise PlanError(
+                f"{task.task_id}: role {task.role} must declare write_scope"
+            )
+        # 空の scope は何とも競合しないため、範囲不明のまま並列実行される。
+        # 黙って通さず拒否する (#61 レビュー指摘)。
+        for scope in task.write_scope:
+            if not scope.strip():
+                raise PlanError(f"{task.task_id}: write_scope must not be empty")
         for dep in task.depends_on:
             if dep == task.task_id:
                 raise PlanError(f"{task.task_id}: depends_on itself")
@@ -192,25 +164,39 @@ def validate_plan(tasks: list[PlannedTask]) -> None:
 
 
 def _check_cycles(tasks: list[PlannedTask]) -> None:
+    """依存グラフの循環を検出する。
+
+    深い依存鎖で再帰上限に当たらないよう、明示的なスタックで辿る
+    (#61 レビュー指摘)。
+    """
     graph = {t.task_id: list(t.depends_on) for t in tasks}
     WHITE, GREY, BLACK = 0, 1, 2
     color = {tid: WHITE for tid in graph}
 
-    def visit(node: str, stack: list[str]) -> None:
-        color[node] = GREY
-        stack.append(node)
-        for nxt in graph[node]:
-            if color[nxt] == GREY:
-                cycle = stack[stack.index(nxt):] + [nxt]
-                raise PlanError("depends_on cycle: " + " -> ".join(cycle))
-            if color[nxt] == WHITE:
-                visit(nxt, stack)
-        stack.pop()
-        color[node] = BLACK
-
-    for tid in graph:
-        if color[tid] == WHITE:
-            visit(tid, [])
+    for root in graph:
+        if color[root] != WHITE:
+            continue
+        # (node, 次の依存の index) と、その時点の経路
+        stack: list[tuple[str, int]] = [(root, 0)]
+        path: list[str] = []
+        color[root] = GREY
+        path.append(root)
+        while stack:
+            node, index = stack[-1]
+            if index < len(graph[node]):
+                stack[-1] = (node, index + 1)
+                nxt = graph[node][index]
+                if color[nxt] == GREY:
+                    cycle = path[path.index(nxt):] + [nxt]
+                    raise PlanError("depends_on cycle: " + " -> ".join(cycle))
+                if color[nxt] == WHITE:
+                    color[nxt] = GREY
+                    path.append(nxt)
+                    stack.append((nxt, 0))
+                continue
+            stack.pop()
+            path.pop()
+            color[node] = BLACK
 
 
 def conflicts(a: PlannedTask, b: PlannedTask) -> bool:
