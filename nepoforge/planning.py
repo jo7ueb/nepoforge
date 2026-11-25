@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import fnmatch
+import re
 from dataclasses import dataclass, field
 
 from .store import NepoforgeError
@@ -31,6 +32,7 @@ READ_ONLY_ROLES = frozenset({"expert", "explore", "reviewer"})
 
 # 書き込み範囲の宣言が必須の役割 (設計メモ 0005 §4.1)
 WRITE_REQUIRED_ROLES = frozenset({"architect", "implementer"})
+TASK_ROLES = READ_ONLY_ROLES | WRITE_REQUIRED_ROLES
 
 # 既定の並列上限 (設計メモ 0005 §4.4 規則 1)
 DEFAULT_MAX_PARALLEL = 10
@@ -47,13 +49,16 @@ class PlannedTask:
 
 
 def normalize_scope(scope: str) -> str:
-    """scope の表記を比較用に正規化する。
+    """リポジトリ相対の scope を比較用に正規化する。
 
     `docs/../nepoforge/` と `nepoforge/` を別物として扱うと、同じファイルへの
     同時書き込みを見逃す。lexical に `.` と `..` を畳む。glob を含む階層は
     畳まない (どの実体を指すか決まらないため、比較時に競合側へ倒す)。
     """
     text = scope.strip().replace("\\", "/")
+    if text.startswith("/") or re.match(r"[A-Za-z]:", text):
+        # 絶対パス・ドライブ付きパスは実行環境を問わず拒否する。
+        raise PlanError("write_scope must be repository-relative")
     trailing_slash = text.endswith("/")
     while text.startswith("./"):
         text = text[2:]
@@ -141,6 +146,8 @@ def validate_plan(tasks: list[PlannedTask]) -> None:
         seen.add(task_id)
 
     for task in tasks:
+        if task.role not in TASK_ROLES:
+            raise PlanError(f"{task.task_id}: unknown role {task.role!r}")
         if task.role in READ_ONLY_ROLES and task.write_scope:
             raise PlanError(
                 f"{task.task_id}: role {task.role} must not declare write_scope"
@@ -154,6 +161,10 @@ def validate_plan(tasks: list[PlannedTask]) -> None:
         for scope in task.write_scope:
             if not scope.strip():
                 raise PlanError(f"{task.task_id}: write_scope must not be empty")
+            try:
+                normalize_scope(scope)
+            except PlanError as exc:
+                raise PlanError(f"{task.task_id}: {exc}") from exc
         for dep in task.depends_on:
             if dep == task.task_id:
                 raise PlanError(f"{task.task_id}: depends_on itself")
@@ -222,12 +233,13 @@ def ready_tasks(
     running: 実行中の task_id
     failed: 失敗した task_id (後続は blocked として起動しない)
 
-    並列上限に空きがある場合だけ返す。write_scope が重複する running 中の
-    タスクがあれば起動しない。失敗した依存を持つタスクは blocked とみなし、
-    起動対象に含めない。
+    不正な計画は候補選択前に拒否する。並列上限に空きがある場合だけ返す。
+    write_scope が重複する running 中のタスクがあれば起動しない。
+    失敗した依存を持つタスクは blocked とみなし、起動対象に含めない。
     """
     if max_parallel < 1:
         raise PlanError("max_parallel must be >= 1")
+    validate_plan(tasks)
 
     by_id = {t.task_id: t for t in tasks}
     slots = max_parallel - len(running)

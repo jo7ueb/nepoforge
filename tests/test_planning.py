@@ -62,12 +62,12 @@ class TestValidatePlan(unittest.TestCase):
         self.assertIn("cycle", str(ctx.exception))
 
     def test_longer_cycle_detected(self) -> None:
-        with self.assertRaises(PlanError):
+        with self.assertRaisesRegex(PlanError, "cycle"):
             validate_plan(
                 [
                     PlannedTask("T1", "explore", depends_on=("T2",)),
                     PlannedTask("T2", "expert", depends_on=("T3",)),
-                    PlannedTask("T3", "architect", depends_on=("T1",)),
+                    PlannedTask("T3", "architect", depends_on=("T1",), write_scope=("docs/",)),
                 ]
             )
 
@@ -86,6 +86,12 @@ class TestValidatePlan(unittest.TestCase):
             with self.assertRaises(PlanError) as ctx:
                 validate_plan([PlannedTask("T1", role, write_scope=("docs/x.md",))])
             self.assertIn(role, str(ctx.exception))
+
+    def test_unknown_role_rejected_with_or_without_scope(self) -> None:
+        for scopes in ((), ("docs/x.md",)):
+            with self.subTest(scopes=scopes):
+                with self.assertRaisesRegex(PlanError, "T1: unknown role.*implementr"):
+                    validate_plan([PlannedTask("T1", "implementr", write_scope=scopes)])
 
     def test_write_required_role_without_scope_rejected(self) -> None:
         # architect / implementer は write_scope 必須 (0005 §4.1)
@@ -107,6 +113,20 @@ class TestValidatePlan(unittest.TestCase):
     def test_blank_write_scope_entry_rejected(self) -> None:
         with self.assertRaises(PlanError):
             validate_plan([PlannedTask("T1", "implementer", write_scope=("  ",))])
+
+    def test_anchored_write_scope_rejected_on_any_platform(self) -> None:
+        for scope in (
+            " /repo/docs/x.md ",
+            "/",
+            r"\docs\x.md",
+            r"C:\repo\docs\x.md",
+            "C:/repo/docs/x.md",
+            "C:docs/x.md",
+            r"\\server\share\docs\x.md",
+        ):
+            with self.subTest(scope=scope):
+                with self.assertRaisesRegex(PlanError, "T1:.*repository-relative"):
+                    validate_plan([PlannedTask("T1", "implementer", write_scope=(scope,))])
 
     def test_deep_chain_does_not_recurse(self) -> None:
         # 依存鎖が深くても再帰上限に当たらない
@@ -323,6 +343,20 @@ class TestReadyTasks(unittest.TestCase):
         ]
         ready = ready_tasks(plan, accepted=set(), running=set())
         self.assertEqual(ready, ["T1"])
+
+    def test_mixed_absolute_and_relative_scopes_cannot_be_scheduled(self) -> None:
+        plan = [
+            PlannedTask("T1", "implementer", write_scope=("nepoforge/planning.py",)),
+            PlannedTask("T2", "implementer", write_scope=("/repo/nepoforge/planning.py",)),
+        ]
+        for running in (set(), {"T1"}, {"T2"}):
+            with self.subTest(running=running):
+                with self.assertRaisesRegex(PlanError, "T2:.*repository-relative"):
+                    ready_tasks(plan, accepted=set(), running=running)
+
+    def test_unknown_role_cannot_be_scheduled(self) -> None:
+        with self.assertRaisesRegex(PlanError, "T1: unknown role"):
+            ready_tasks([PlannedTask("T1", "implementr")], accepted=set(), running=set())
 
     def test_failed_dependency_blocks_descendants(self) -> None:
         plan = [
