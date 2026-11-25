@@ -397,7 +397,7 @@ nepoforge resolve --file PATH     # 任意: TaskInput の JSON を読み ModelRe
   後続工程の準備を並行して進める (工程バリアを作らない)。設計が依存する調査だけを depends_on で結ぶ。
 ```
 
-nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル名・`fastmetal/`・報告タグ・`subagent_depth` を書かない — `test_cli.TestWorkflowContract.test_no_engine_or_model_details` を壊さない)。実機検証が完了するまで、nfgo の「#52 の Model Resolver は未接続であり、#49 では役割既定のみを使う」の一文は維持し、検証証跡を PR 本文に記録してから差し替える (段階的リリース)。
+nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル名・`fastmetal/`・報告タグ・`subagent_depth` を書かない — `test_cli.TestWorkflowContract.test_no_engine_or_model_details` を壊さない)。実機検証が完了するまで、nfgo の「#52 の Model Resolver は未接続であり、#49 では役割既定のみを使う」の一文は維持し、検証証跡を PR 本文に記録してから差し替える (段階的リリース)。この差し替えは #52 で実施済み (§8.3・状態行を参照)。
 
 ### 7.4 AGENTS.md 追記案 (R7)
 
