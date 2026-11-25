@@ -95,6 +95,20 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
     skips: list[str] = []
 
     # 0. 決定的ツール判定
+    # ツール実行でも、信頼できない出所からの明示指定は黙って捨てず拒否する
+    # (#52 監査 W02)。モデルを選ばないことと入力の検証を混同しない。
+    if task.executor == "tool" and task.model_request is not None:
+        if task.model_request_source not in TRUSTED_SOURCES:
+            return ModelResolution(
+                task_id=task.task_id,
+                executor=task.executor,
+                role=task.role,
+                resolved_model=None,
+                binding="",
+                reason="unresolved: untrusted_source",
+                constraints_applied=tuple(skips),
+                status="unresolved",
+            )
     if task.executor == "tool":
         return ModelResolution(
             task_id=task.task_id,

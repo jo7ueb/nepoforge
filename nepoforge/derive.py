@@ -174,12 +174,16 @@ def derive_plan(
         )
     return items
 
+
 def safe_texts() -> set[str]:
     """現在の生成規則で再現できる派生定義の全文集合を返す。
 
     `--prune` と uninstall が「正規の生成物」と「利用者改変・所有物」を
     区別するために使う。既存導入環境の破壊を避けるため、内容が一致しない
     ファイルは既定では削除しない。
+
+    task_rules のモデルは candidates にも自動で入るが、明示的に取り込んで
+    おく (生成・削除の判定基準が candidates の作り方に依存しないようにする)。
     """
     models: set[str] = set()
     for name in profiles.available_profiles():
@@ -189,6 +193,10 @@ def safe_texts() -> set[str]:
             continue
         models.update(config.roles.values())
         models.update(profiles.format_model(c.ref) for c in config.candidates)
+        for rule in getattr(config, "task_rules", ()):
+            model = getattr(rule, "model", None)
+            if isinstance(model, str):
+                models.add(model)
     texts: set[str] = set()
     for role in store.USER_AGENT_IDS:
         for model in models:

@@ -78,6 +78,23 @@ class TestApply(unittest.TestCase):
         self.assertEqual(text, (store.DATA_DIR / "commands/nfgo.md").read_text(encoding="utf-8"))
 
 
+class TestParseModelWhitespace(unittest.TestCase):
+    """モデル表記の空白・制御文字は読み込み時に拒否する (#52 監査 W01)。"""
+
+    def test_internal_space_rejected(self) -> None:
+        for text in ("p/ m", "a b/c d", "fastmetal/glm 5.3"):
+            with self.assertRaises(NepoforgeError):
+                profiles.parse_model(text)
+
+    def test_surrounding_space_trimmed(self) -> None:
+        ref = profiles.parse_model("  fastmetal/beam-1.0  ")
+        self.assertEqual(profiles.format_model(ref), "fastmetal/beam-1.0")
+
+    def test_control_char_rejected(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("fastmetal/beam\t1.0")
+
+
 class TestParseModel(unittest.TestCase):
     def test_valid_simple(self) -> None:
         ref = profiles.parse_model("fastmetal/japan-glm-5.3-flash")

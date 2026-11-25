@@ -177,6 +177,46 @@ class TestDeriveCLI(IsolatedEnv):
         roles = {it.role for it in plan}
         self.assertEqual(roles, set(store.USER_AGENT_IDS))
 
+    def test_safe_texts_includes_task_rule_only_models(self) -> None:
+        # task_rules のモデルは candidates にも自動で入るため safe 集合に含まれる
+        # (W03 の指摘は実測で成立しなかった。回帰防止として固定する)
+        import json
+
+        lp = store.local_profile_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        balanced = profiles.load_profile("balanced")
+        data = {
+            "roles": dict(balanced),
+            "task_rules": [{"when": {"risk": "low"}, "model": "fastmetal/kimi-k3.1-pro"}],
+        }
+        lp.write_text(json.dumps(data))
+        texts = derive.safe_texts()
+        self.assertIn(derive.derive_text("reviewer", "fastmetal/kimi-k3.1-pro"), texts)
+
+    def test_prune_removes_task_rule_only_derived(self) -> None:
+        # task_rules 由来の派生定義は --force なしで prune できる (回帰防止)
+        import json
+
+        lp = store.local_profile_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        balanced = profiles.load_profile("balanced")
+        data = {
+            "roles": dict(balanced),
+            "task_rules": [{"when": {"role": "reviewer"}, "model": "fastmetal/kimi-k3.1-pro"}],
+        }
+        lp.write_text(json.dumps(data))
+        self.assertEqual(cli.main(["init"]), 0)
+        self.assertEqual(
+            cli.main(["profile", "derive", "--role", "reviewer", "--model", "fastmetal/kimi-k3.1-pro"]), 0
+        )
+        derived = store.opencode_dir() / "agents" / "nf-reviewer-kimi-k3.1-pro.md"
+        self.assertTrue(derived.is_file())
+        # task_rules を外すと orphan になる
+        data["task_rules"] = []
+        lp.write_text(json.dumps(data))
+        self.assertEqual(cli.main(["profile", "derive", "--prune"]), 0)
+        self.assertFalse(derived.exists())
+
     def test_derive_does_not_touch_managed_files(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         before = list(store.USER_MANAGED_FILES)

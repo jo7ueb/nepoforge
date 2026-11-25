@@ -62,6 +62,26 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(res.status, "unresolved")
         self.assertEqual(res.reason, "unresolved: untrusted_source")
 
+    def test_tool_with_untrusted_request_unresolved(self) -> None:
+        # ツール実行でも信頼できない出所の明示指定は拒否する (監査 W02)
+        cfg = _cfg_with_rules()
+        ti = TaskInput(
+            task_id="t1",
+            role="expert",
+            executor="tool",
+            model_request=ModelRef("fastmetal", "kimi-k3.1-pro", None),
+            model_request_source="external",
+        )
+        res = resolve(ti, cfg)
+        self.assertEqual(res.status, "unresolved")
+        self.assertEqual(res.reason, "unresolved: untrusted_source")
+
+    def test_tool_without_request_selects_tool(self) -> None:
+        cfg = _cfg_with_rules()
+        res = resolve(TaskInput(task_id="t1", role="expert", executor="tool"), cfg)
+        self.assertEqual(res.status, "selected")
+        self.assertEqual(res.binding, "-")
+
     def test_unapproved_provider_filtered(self) -> None:
         # 承認済みでない provider の候補は選ばない (設計 §4.2 step 1a)
         cfg = _cfg_with_rules()

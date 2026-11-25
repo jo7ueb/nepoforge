@@ -141,6 +141,14 @@ def parse_model(text: str) -> ModelRef:
         raise NepoforgeError(f"invalid model notation: {text!r}")
     if "/" in model or "#" in model:
         raise NepoforgeError(f"invalid model notation: {text!r}")
+    # 前後の空白だけを除去し、内部の空白・制御文字は拒否する (#52 監査 W01)。
+    # 派生定義の agent_id は小文字の slug を使うため、これらは生成時に
+    # はじめて失敗する。設定の読み込み時点で止める。
+    for part in (provider, model, variant):
+        if part is None:
+            continue
+        if part != part.strip() or any(ch.isspace() for ch in part) or not part.isprintable():
+            raise NepoforgeError(f"model notation contains whitespace or control chars: {text!r}")
     return ModelRef(provider=provider, model=model, variant=variant)
 
 
