@@ -429,6 +429,38 @@ class TestCanonicalData(IsolatedEnv):
         self.assertFalse(config.exists())
         self.assertFalse((repo / ".opencode" / ".nepoforge.json").exists())
 
+    def test_legacy_uninstall_refuses_current_manifest(self) -> None:
+        repo = self.make_git_repo("modern")
+        self.cd(repo)
+        self.assertEqual(cli.main(["enable"]), 0)
+        config = repo / ".opencode" / "opencode.jsonc"
+        before = config.read_bytes()
+        result = subprocess.run(
+            [sys.executable, str(self.REPO_ROOT / "scripts" / "nf_workbench.py"),
+             "uninstall", "--to", str(repo)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_legacy_update_refuses_unmanaged_file(self) -> None:
+        repo = self.make_git_repo("legacy-conflict")
+        script = self.REPO_ROOT / "scripts" / "nf_workbench.py"
+        subprocess.run([sys.executable, str(script), "install", "--to", str(repo)],
+                       check=True, capture_output=True, text=True)
+        manifest = repo / ".opencode" / ".nepoforge.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        del data["files"][".opencode/opencode.jsonc"]
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        config = repo / ".opencode" / "opencode.jsonc"
+        config.write_text('{"model": "user/model"}', encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(script), "update", "--to", str(repo), "--force"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(config.read_text(encoding="utf-8"), '{"model": "user/model"}')
+
 
 if __name__ == "__main__":
     unittest.main()

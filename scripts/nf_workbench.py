@@ -303,6 +303,13 @@ def cmd_update(args: argparse.Namespace) -> int:
         fail(f"not installed (no manifest: {target / MANIFEST_PATH}). run 'install' first")
     state = classify(target, manifest)
 
+    conflicts = [rel for rel, kind in state.items() if kind == "conflict"]
+    if conflicts:
+        print("conflict: 既存の非管理ファイルを上書きできないため停止しました:", file=sys.stderr)
+        for rel in conflicts:
+            print(f"  [conflict] {rel}", file=sys.stderr)
+        raise SystemExit(2)
+
     modified = [rel for rel, kind in state.items() if kind == "modified"]
     if modified and not args.force:
         print("conflict: 管理対象ファイルが利用者によって変更されているため停止しました:", file=sys.stderr)
