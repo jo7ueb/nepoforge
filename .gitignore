@@ -24,3 +24,6 @@ __pycache__/
 build/
 *.egg-info/
 .venv/
+
+# Nepoforge (#57): ローカルで生成される OpenCode 設定と管理記録
+/.opencode/

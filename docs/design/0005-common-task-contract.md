@@ -6,6 +6,8 @@
 検証環境: OpenCode **v2.4.0** (実機、2026-11-25 確認 — `opencode --version` と `opencode api get /api/info` が一致)。公式仕様の確認は 2026-11-25 時点の [tools](https://opencode.ai/docs/tools/) / [agents](https://opencode.ai/docs/agents/) / [permissions](https://opencode.ai/docs/permissions/) / [config](https://opencode.ai/docs/config/) / [models](https://opencode.ai/docs/models/) / [commands](https://opencode.ai/docs/commands/) と [config.json](https://opencode.ai/config.json)。
 性質: 設計のみ。コード・新規クラス・DB・課金試験は行わない。
 
+**#57 による配置の変更:** 本設計の TaskSpec / ModelResolution / TaskResult の論理契約は変更しない。実装上の正本は `nepoforge/data/` に一元化する。以下の旧 `.opencode/agents/`、`.opencode/commands/`、`profiles/` は配布先または設計時点の記録であり、後続 #49/#52/#51 の編集先は `nepoforge/data/agents/`、`nepoforge/data/commands/`、`nepoforge/data/profiles/` とする。旧 TestDataSync は正本からの導入・生成物の検証に置換する。
+
 ## 1. 目的と位置づけ
 
 単一 Issue 内のタスク分解・並列委譲・モデル選択・レビューを貫く**共通契約 (TaskSpec / ModelResolution / TaskResult / 状態規則)** を確定し、[Issue #53](https://github.com/jo7ueb/nepoforge/issues/53) の完了条件のとおり、後続実装 (#49 → #52 → #51) の必須先行ゲートとなる設計文書として整備する。各担当が個別に設計して後から共通化する方式は採らない。契約変更が必要になった場合は共通設計を先に改訂・レビューし、個別実装が契約を分岐させない。
@@ -288,10 +290,10 @@ LLM 候補のフィルタ条件: 権限・送信先・データ保持条件 (承
 
 | 種別 | 対象 | 内容 | 時期 |
 | --- | --- | --- | --- |
-| 変更する (提案) | `.opencode/commands/nfgo.md` + `nepoforge/data/commands/nfgo.md` | 委譲契約を TaskSpec / TaskResult 様式へ拡張。Ready 判定・受理・失効の規定を追加 (完全一致同期を維持 — §2.1 事実 5) | #49 |
+| 変更する (提案) | `nepoforge/data/commands/nfgo.md` | 委譲契約を TaskSpec / TaskResult 様式へ拡張。Ready 判定・受理・失効の規定を追加 | #49 |
 | 変更する (提案) | `AGENTS.md` | 「委譲と並列実行」節に TaskSpec / TaskResult の必須項目化を追記 | #49 |
 | 変更する (提案) | `docs/architecture.md` / `ROADMAP.md` | 本設計へのリンク・現状追記 (§3.1 の委譲規定と競合しない) | 本 PR / #49 |
-| 変更する (提案) | `profiles/*.json` + `nepoforge/data/profiles/` | roles マッピング維持のまま optional キー追加 (候補・タスク別ルール — §5.4) | #52 |
+| 変更する (提案) | `nepoforge/data/profiles/*.json` | roles マッピング維持のまま optional キー追加 (候補・タスク別ルール — §5.4) | #52 |
 | 変更する (提案) | `nepoforge/` (CLI・Resolver) / `tests/` | Model Resolver・派生定義生成・契約検証の実装 | #49 / #52 |
 | 変更しない | 5 役の permissions、`.opencode/opencode.jsonc`、`experimental.*` | 最小権限・guardrail・実験的設定は触れない | — |
 | 調整 | #47 の配布手順 | 新たな同梱物 (テンプレート等) を追加する場合の data 配置・同期設計 | #49 / #52 |
@@ -302,7 +304,7 @@ LLM 候補のフィルタ条件: 権限・送信先・データ保持条件 (承
    - 契約検証関数 (後続実装): 依存循環・不明依存・status 列挙・write_scope 空 (expert/explore/reviewer)・model_request 表記 (`provider/model`) の検証。
    - プロファイル互換: roles は 5 役すべて必須・表記検証・トップレベル追加キーの許容・local 上書き (§5.4)。
    - 派生定義生成 (#52 実装時): 権限同一性・model 行差し替え・冪等性・命名衝突時の停止。
-   - TestDataSync は変更不要の見込み (派生定義は比較対象外 — §7.4)。
+   - 正本からの導入・生成物の検証を維持する (#57)。
 2. **最小実機試験 (承認済み範囲・最小課金)**:
    - (1) 役割既定での委譲 → message API で actual_model を機械照合 (0001 T2 手法)。
    - (2) 並列起動の時間的重複 (0002 §3 の session DB / API 手法)。
@@ -503,8 +505,8 @@ Coordinator の統合: Security 観点の T6 との重複指摘 1 件を排除�
 
 | Issue | 責務 | 依存 | 変更対象 (想定) | 受入試験 (本設計との対応) |
 | --- | --- | --- | --- | --- |
-| [#49](https://github.com/jo7ueb/nepoforge/issues/49) | 共通 TaskSpec・委譲・状態/Result の**最小実装** (役割既定モデルで可) | 本設計 (#53) のマージ | `.opencode/commands/nfgo.md` (+ data 同期)、`AGENTS.md` 追記、必要なら `docs/architecture.md` | 課金なし単体: 契約検証 (§9.1)。最小実機: 並列起動の重複・actual_model 照合 (§9.2 (1)(2)) |
-| [#52](https://github.com/jo7ueb/nepoforge/issues/52) | 共通 Model Resolver・承認済み候補・プロファイル互換・実行モデル観測 | #49 の基盤 + 本設計 §5/§7.4 | `profiles/*.json` の optional 拡張、`nepoforge/` (Resolver・派生定義生成)、配布手順 | 候補外拒否・選択不能時の停止報告 (§5.3)、派生定義の実機試験 (§9.2 (3))、actual_model 突合 (§4.3)、役割固定との比較 |
+| [#49](https://github.com/jo7ueb/nepoforge/issues/49) | 共通 TaskSpec・委譲・状態/Result の**最小実装** (役割既定モデルで可) | 本設計 (#53) のマージ | `nepoforge/data/commands/nfgo.md`、`AGENTS.md` 追記、必要なら `docs/architecture.md` | 課金なし単体: 契約検証 (§9.1)。最小実機: 並列起動の重複・actual_model 照合 (§9.2 (1)(2)) |
+| [#52](https://github.com/jo7ueb/nepoforge/issues/52) | 共通 Model Resolver・承認済み候補・プロファイル互換・実行モデル観測 | #49 の基盤 + 本設計 §5/§7.4 | `nepoforge/data/profiles/*.json` の optional 拡張、`nepoforge/` (Resolver・派生定義生成)、配布手順 | 候補外拒否・選択不能時の停止報告 (§5.3)、派生定義の実機試験 (§9.2 (3))、actual_model 突合 (§4.3)、役割固定との比較 |
 | [#51](https://github.com/jo7ueb/nepoforge/issues/51) | レビュー観点の体系化・並列レビュー・観点別モデル割り当て | #49 + #52 | `/nfgo` のレビュー工程、観点カタログ (docs/) | 並列レビューの時間的重複ログ、2 種以上モデルの実行確認、修正後の失効・再検証 (§4.5)、統合処理 (§4.5 規則 4) |
 
 - #49/#52 は後続 (#51/#16) を見据えた境界を保つ。契約の変更は共通設計 (本書) の改訂・レビューが先。

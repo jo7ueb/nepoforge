@@ -64,8 +64,9 @@ Issue を起点に、次の順序で進める (#8):
 ## リポジトリ構成
 
 - `docs/` — 設計文書 ([docs/architecture.md](docs/architecture.md)、設計メモ [docs/design/](docs/design/)、調査報告 [docs/investigate/](docs/investigate/))。
-- `.opencode/` — OpenCode 設定(本リポジトリの開発環境)。エージェント定義 (`agents/`) と権限ガードレール (`opencode.jsonc`)。配布物の正本は `nepoforge/data/` (#47)。乖離はテストが検出する。
-- `profiles/` — モデルプロファイル (本リポジトリ開発用)。配布物は `nepoforge/data/profiles/`。適用は `scripts/switch_profile.py` または `nepoforge profile use`。
+- `nepoforge/data/` — エージェント定義、コマンド、モデルプロファイル、guardrail/provider テンプレートの唯一の正本 (#57)。機能変更はこの配下へ行う。
+- `.opencode/` — `nepoforge enable` 等のローカル生成物。Git 管理・手編集の対象にしない。OpenCode の起動前に guardrail を有効化する。開発版の検証は README の分離手順に従う。
+- `scripts/` — 旧方式の互換・移行用。通常のプロファイル切替は `nepoforge profile use`。
 - `nepoforge/` — 配布パッケージ本体 (#47)。ユーザー単位導入・管理 CLI。
 - `tests/` — 単体・統合テスト (API 課金なし)。実行: `python3 -m unittest discover -s tests -t .` (依存: json5, platformdirs)。
 - Phase 1 以降で `workflows/`(ワークフロー定義)を追加する (#8)。

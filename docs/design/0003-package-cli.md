@@ -72,9 +72,7 @@ Nepoforge を配布可能なパッケージとして整備し、PATH 上の `nep
   - `data/profiles/{economy,balanced,performance}.json`
   - `data/templates/guardrail.jsonc` (permissions 雛形)
   - `data/templates/provider-fastmetal.jsonc` (provider 雛形)
-- リポジトリ自身の `.opencode/` は開発環境として維持する。
-  テストで両者の無意味な乖離 (model 行を除き一致しない) を検出する。
-  model 行はプロファイル適用で変わるため比較から除外する。
+- #57 で開発用複製を廃止する。本リポジトリも init/enable で導入し、`.opencode/` は生成物として Git 管理しない。`nepoforge/data/` だけを変更する。開発版検証・既存 clone の移行は README を参照する。
 
 ### 4.2 ユーザー単位の導入先 (グローバル)
 
@@ -182,9 +180,7 @@ nepoforge profile use NAME | list | show [NAME] [--dry-run]
 
 ## 8. 旧方式 (#9) からの移行
 
-1. 旧方式で導入したリポジトリで `python3 scripts/nf_workbench.py uninstall`
-   (or 配布済みスクリプト) を実行し、リポジトリ内の複製を撤去する。
-   利用者改変ファイルは既定で残る。
+1. OpenCode を停止し、旧方式で導入したリポジトリの変更を確認・退避する。#57 以降の Nepoforge ソースにある `python3 /path/to/nepoforge/scripts/nf_workbench.py uninstall --to /path/to/project --dry-run` で計画を確認し、問題なければ `--dry-run` を外す。旧版スクリプトは dry-run の削除処理に不備があるため新版を使う。利用者改変・管理外ファイルは既定で残る。
 2. `nepoforge init` (ユーザー単位) → 各リポジトリで `nepoforge enable`。
 3. `nepoforge status` は旧マニフェスト (`kind` 無し) を検出したら上記を案内する。
    誤って旧環境を壊さないよう、CLI が旧マニフェストを自動削除することはない。
@@ -199,7 +195,7 @@ nepoforge profile use NAME | list | show [NAME] [--dry-run]
   - マニフェスト分類 (missing/unchanged/updatable/modified/conflict)
   - プロファイル適用 (model 行差し替え・不明モデル・不正表記)
   - enable/disable/dry-run/衝突停止/旧マニフェスト検出
-  - data とリポジトリ `.opencode` の同期検証 (model 行を除く)
+  - 正本からの導入、Git 非追跡・生成物の ignore、enable/update/disable、旧方式の安全な撤去 (#57)
 - 統合 (実機・サンドボックス): `XDG_CONFIG_HOME`/`XDG_STATE_HOME` を
   一時ディレクトリに向け、init → status → profile use → enable (別リポジトリ
   2 件) → update → doctor → disable → uninstall の一連を実行。

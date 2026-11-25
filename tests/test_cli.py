@@ -10,6 +10,8 @@ import contextlib
 import io
 import json
 import re
+import subprocess
+import sys
 import unittest
 from pathlib import Path
 
@@ -344,27 +346,120 @@ class TestProvider(IsolatedEnv):
         self.assertEqual(config.read_text(), "{broken")
 
 
-class TestDataSync(unittest.TestCase):
-    """リポジトリの .opencode とパッケージ同梱 data の乖離を検出する (#47 §4.1)。"""
+class TestCanonicalData(IsolatedEnv):
+    """正本のみを利用し、自身の clone と同じ条件で導入・有効化する (#57)。"""
 
     REPO_ROOT = Path(__file__).resolve().parent.parent
 
-    def test_agents_match_ignoring_model_lines(self) -> None:
+    def test_clean_source_checkout_enable_and_ignore(self) -> None:
+        # source の生成物の有無ではなく、Git の追跡対象を検証する。
+        tracked = subprocess.check_output(
+            ["git", "ls-files", "--", ".opencode", "profiles"],
+            cwd=self.REPO_ROOT, text=True,
+        )
+        self.assertEqual(tracked, "")
+        repo = self.make_git_repo("nepoforge")
+        (repo / ".gitignore").write_text(
+            (self.REPO_ROOT / ".gitignore").read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", ".gitignore"], cwd=repo, check=True)
+        self.cd(repo)
+        self.assertEqual(cli.main(["init"]), 0)
+        self.assertEqual(cli.main(["enable", "--dry-run"]), 0)
+        self.assertFalse((repo / ".opencode").exists())
+        self.assertEqual(cli.main(["enable"]), 0)
+        self.assertEqual(cli.main(["enable"]), 0)
+        config = repo / ".opencode" / "opencode.jsonc"
+        manifest = repo / ".opencode" / ".nepoforge.json"
+        self.assertTrue(manifest.is_file())
+        self.assertEqual(config.read_text(encoding="utf-8"),
+                         cli.GUARDRAIL_TEMPLATE.read_text(encoding="utf-8"))
+        self.assertEqual(cli.main(["update"]), 0)
+        self.assertEqual(subprocess.check_output(
+            ["git", "ls-files", "--others", "--exclude-standard"],
+            cwd=repo, text=True,
+        ), "")
+        self.assertFalse((repo / ".opencode" / "agents").exists())
+        self.assertFalse((repo / ".opencode" / "commands").exists())
+        self.assertEqual(cli.main(["disable"]), 0)
+        self.assertFalse(config.exists())
+        self.assertFalse(manifest.exists())
+
+    def test_install_renders_canonical_data(self) -> None:
+        from nepoforge import profiles
+        self.assertEqual(cli.main(["init"]), 0)
+        profile = profiles.load_profile("balanced")
         for agent in store.USER_AGENT_IDS:
-            repo_text = (self.REPO_ROOT / ".opencode" / "agents" / f"{agent}.md").read_text(encoding="utf-8")
-            data_text = (store.DATA_DIR / "agents" / f"{agent}.md").read_text(encoding="utf-8")
-            strip = lambda t: "\n".join(l for l in t.splitlines() if not l.startswith("model:"))
-            self.assertEqual(strip(repo_text), strip(data_text), f"agent drift: {agent}")
+            rel = f"agents/{agent}.md"
+            self.assertEqual(
+                (store.opencode_dir() / rel).read_text(encoding="utf-8"),
+                profiles.render(rel, profile),
+            )
+        rel = "commands/nfgo.md"
+        self.assertEqual(
+            (store.opencode_dir() / rel).read_text(encoding="utf-8"),
+            (store.DATA_DIR / rel).read_text(encoding="utf-8"),
+        )
 
-    def test_command_matches(self) -> None:
-        repo_text = (self.REPO_ROOT / ".opencode" / "commands" / "nfgo.md").read_text(encoding="utf-8")
-        data_text = (store.DATA_DIR / "commands" / "nfgo.md").read_text(encoding="utf-8")
-        self.assertEqual(repo_text, data_text)
+    def test_guardrail_retains_critical_denies(self) -> None:
+        rules = jsonc.loads(cli.GUARDRAIL_TEMPLATE.read_text(encoding="utf-8"))["permissions"]
+        for resource in ("git push --force*", "gh pr merge*", "gh repo delete*"):
+            self.assertIn({"action": "shell", "resource": resource, "effect": "deny"}, rules)
 
-    def test_guardrail_rules_match_repo_config(self) -> None:
-        repo_text = (self.REPO_ROOT / ".opencode" / "opencode.jsonc").read_text(encoding="utf-8")
-        template_text = (store.TEMPLATE_DIR / "guardrail.jsonc").read_text(encoding="utf-8")
-        self.assertEqual(jsonc.loads(template_text)["permissions"], jsonc.loads(repo_text)["permissions"])
+    def test_legacy_install_and_safe_uninstall(self) -> None:
+        repo = self.make_git_repo("legacy")
+        script = self.REPO_ROOT / "scripts" / "nf_workbench.py"
+        def run(command: str, *args: str) -> None:
+            subprocess.run(
+                [sys.executable, str(script), command, "--to", str(repo), *args],
+                check=True, capture_output=True, text=True,
+            )
+        run("install")
+        config = repo / ".opencode" / "opencode.jsonc"
+        self.assertEqual(
+            config.read_text(encoding="utf-8"),
+            cli.GUARDRAIL_TEMPLATE.read_text(encoding="utf-8"),
+        )
+        run("status")
+        run("update")
+        run("uninstall", "--dry-run")
+        self.assertTrue(config.is_file())
+        run("uninstall")
+        self.assertFalse(config.exists())
+        self.assertFalse((repo / ".opencode" / ".nepoforge.json").exists())
+
+    def test_legacy_uninstall_refuses_current_manifest(self) -> None:
+        repo = self.make_git_repo("modern")
+        self.cd(repo)
+        self.assertEqual(cli.main(["enable"]), 0)
+        config = repo / ".opencode" / "opencode.jsonc"
+        before = config.read_bytes()
+        result = subprocess.run(
+            [sys.executable, str(self.REPO_ROOT / "scripts" / "nf_workbench.py"),
+             "uninstall", "--to", str(repo)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(config.read_bytes(), before)
+
+    def test_legacy_update_refuses_unmanaged_file(self) -> None:
+        repo = self.make_git_repo("legacy-conflict")
+        script = self.REPO_ROOT / "scripts" / "nf_workbench.py"
+        subprocess.run([sys.executable, str(script), "install", "--to", str(repo)],
+                       check=True, capture_output=True, text=True)
+        manifest = repo / ".opencode" / ".nepoforge.json"
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+        del data["files"][".opencode/opencode.jsonc"]
+        manifest.write_text(json.dumps(data), encoding="utf-8")
+        config = repo / ".opencode" / "opencode.jsonc"
+        config.write_text('{"model": "user/model"}', encoding="utf-8")
+        result = subprocess.run(
+            [sys.executable, str(script), "update", "--to", str(repo), "--force"],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(config.read_text(encoding="utf-8"), '{"model": "user/model"}')
 
 
 if __name__ == "__main__":
