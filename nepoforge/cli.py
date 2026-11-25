@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, jsonc, profiles, store
+from . import __version__, jsonc, profiles, store, derive
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -115,6 +115,17 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
             if action == "update":
                 print(f"--- diff: {rel}")
                 print(store.diff_text(config_dir / rel, store.DATA_DIR / rel), end="")
+        # 派生定義の計画も表示
+        try:
+            cfg = profiles.load_profile_config(profile_name)
+            dplan = derive.derive_plan(cfg, target_dir=config_dir)
+            for it in dplan:
+                print(f"  [derived {it.state:8}] {config_dir / it.rel}")
+                if it.state in ("write", "conflict"):
+                    target = config_dir / it.rel
+                    print(store.diff_text_vs(target if target.is_file() else None, it.expected_text, str(target)), end="")
+        except NepoforgeError:
+            pass
         return 0
 
     for action, rel in plan:
@@ -128,6 +139,13 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
 
     store.store_write_manifest(profile_name, expected)
     print(f"installed (version {store.VERSION}, profile {profile_name}). manifest: {store.manifest_path()}")
+    # 事前一括生成
+    try:
+        cfg = profiles.load_profile_config(profile_name)
+        dplan = derive.derive_plan(cfg, target_dir=config_dir)
+        _derive_apply(dplan, config_dir, force, False)
+    except NepoforgeError as exc:
+        print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
     return 0
 
 
@@ -343,6 +361,57 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             target.unlink()
             print(f"  [removed ] {rel}")
         removed.append(rel)
+
+    # 派生定義 (agents/nf-*.md) の撤去 (#52 §5.5)
+    # 現行生成規則と内容が一致するものを通常削除、不一致は既定で残す
+    model_strs: set[str] = set()
+    for pname in profiles.available_profiles():
+        try:
+            c = profiles.load_profile_config(pname)
+            for r, m in c.roles.items():
+                model_strs.add(m)
+            for cand in c.candidates:
+                model_strs.add(profiles.format_model(cand.ref))
+        except NepoforgeError:
+            pass
+    # local
+    try:
+        c = profiles.load_profile_config("local")
+        for r, m in c.roles.items():
+            model_strs.add(m)
+        for cand in c.candidates:
+            model_strs.add(profiles.format_model(cand.ref))
+    except NepoforgeError:
+        pass
+    safe_ids: set[str] = set()
+    safe_texts: set[str] = set()
+    for role in store.USER_AGENT_IDS:
+        for ms in model_strs:
+            try:
+                aid = derive.agent_id_for(role, ms)
+                text = derive.derive_text(role, ms)
+            except NepoforgeError:
+                continue
+            safe_ids.add(aid)
+            safe_texts.add(text)
+    agents_dir = config_dir / "agents"
+    if agents_dir.is_dir():
+        for f in sorted(agents_dir.glob("nf-*.md")):
+            rel = f"agents/{f.name}"
+            content = f.read_text(encoding="utf-8")
+            safe = (f.stem in safe_ids and content in safe_texts) or (content in safe_texts)
+            if not safe and not args.force:
+                print(f"  [kept    ] {rel} (内容が生成規則と一致しないため残しました。不要なら --force)")
+                continue
+            if not safe and args.force:
+                backup = store.backup_file(config_dir, rel)
+                if backup:
+                    print(f"  [backup  ] {rel} -> {backup}")
+            if args.dry_run:
+                print(f"  [removed ] {rel} (dry-run)")
+            else:
+                f.unlink()
+                print(f"  [removed ] {rel}")
 
     if args.projects:
         for entry in projects:
@@ -560,7 +629,15 @@ def cmd_profile(args: argparse.Namespace) -> int:
         print(f"profile: {name}")
         for role in store.USER_AGENT_IDS:
             print(f"  {role:12} {prof[role]}")
+        try:
+            cfg = profiles.load_profile_config(name)
+            print(f"  max_parallel: {cfg.constraints.max_parallel}")
+            print(f"  task_rules:   {len(cfg.task_rules)}")
+        except NepoforgeError:
+            pass
         return 0
+    if args.profile_command == "derive":
+        return cmd_profile_derive(args)
     # use
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
@@ -584,21 +661,147 @@ def cmd_profile(args: argparse.Namespace) -> int:
     changes = [rel for rel, kind in state.items() if kind in ("missing", "updatable", "modified")]
     if not changes:
         print(f"profile is already '{args.name}'")
-        return 0
-    for rel in changes:
-        print(f"  [update  ] {config_dir / rel}")
+    else:
+        for rel in changes:
+            print(f"  [update  ] {config_dir / rel}")
     if args.dry_run:
+        # 派生定義の計画も表示
+        try:
+            cfg = profiles.load_profile_config(args.name)
+            plan = derive.derive_plan(cfg, target_dir=config_dir)
+            for it in plan:
+                print(f"  [derived {it.state:8}] {config_dir / it.rel}")
+        except NepoforgeError:
+            pass
         print("dry-run: no changes made")
         return 0
-    for rel in changes:
-        backup = store.backup_file(config_dir, rel)
-        if backup:
-            print(f"  [backup  ] {rel} -> {backup}")
-        dest = config_dir / rel
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_text(profiles.render(rel, prof), encoding="utf-8")
-    store.store_write_manifest(args.name, expected)
-    print(f"profile switched to '{args.name}'")
+    if changes:
+        for rel in changes:
+            backup = store.backup_file(config_dir, rel)
+            if backup:
+                print(f"  [backup  ] {rel} -> {backup}")
+            dest = config_dir / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_text(profiles.render(rel, prof), encoding="utf-8")
+        store.store_write_manifest(args.name, expected)
+    # 事前一括生成
+    try:
+        cfg = profiles.load_profile_config(args.name)
+        plan = derive.derive_plan(cfg, target_dir=config_dir)
+        _derive_apply(plan, config_dir, args.force, False)
+    except NepoforgeError as exc:
+        print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
+    return 0
+
+
+def _derive_apply(plan, config_dir, force, dry_run):
+    """派生定義の計画を適用する共通処理 (profile derive / use / init で再利用)。"""
+    conflicts = [it for it in plan if it.state == "conflict"]
+    if conflicts and not force and not dry_run:
+        print("conflict: 派生定義が既存ファイルと異なるため停止しました:", file=sys.stderr)
+        for it in conflicts:
+            print(f"  [conflict] {config_dir / it.rel}", file=sys.stderr)
+        raise SystemExit(2)
+    if dry_run:
+        for it in plan:
+            print(f"  [derived {it.state:8}] {config_dir / it.rel}")
+            if it.state in ("write", "conflict"):
+                target = config_dir / it.rel
+                print(store.diff_text_vs(target if target.is_file() else None, it.expected_text, str(target)), end="")
+        return 0
+    for it in plan:
+        if it.state == "ok":
+            continue
+        if it.state == "conflict" and not force:
+            continue
+        target = config_dir / it.rel
+        if it.state == "conflict" and force:
+            backup = store.backup_file(config_dir, it.rel)
+            if backup:
+                print(f"  [backup  ] {it.rel} -> {backup}")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(it.expected_text, encoding="utf-8")
+        print(f"  [derived {it.state:8}] {target}")
+    return 0
+
+
+def cmd_profile_derive(args: argparse.Namespace) -> int:
+    manifest = store.load_manifest(store.manifest_path())
+    name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
+    config = profiles.load_profile_config(name)
+    config_dir = store.opencode_dir()
+
+    role = args.role
+    model = args.model
+    model_ref = None
+    if model is not None:
+        model_ref = profiles.parse_model(model)
+
+    try:
+        plan = derive.derive_plan(config, role=role, model=model_ref, target_dir=config_dir)
+    except NepoforgeError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+
+    if not plan:
+        print("nothing to derive (all pairs match role defaults or already present)")
+        # prune 処理は継続
+        if not args.prune:
+            return 0
+
+    print(f"profile: {name}")
+    for it in plan:
+        print(f"  [{it.state:8}] {config_dir / it.rel}")
+
+    # conflict 停止
+    if any(it.state == "conflict" for it in plan) and not args.force and not args.dry_run:
+        print("conflict: 派生定義が既存ファイルと異なるため停止しました:", file=sys.stderr)
+        for it in plan:
+            if it.state == "conflict":
+                print(f"  [conflict] {config_dir / it.rel}", file=sys.stderr)
+        raise SystemExit(2)
+
+    if not args.dry_run:
+        _derive_apply(plan, config_dir, args.force, False)
+    else:
+        _derive_apply(plan, config_dir, args.force, True)
+
+    # prune
+    if args.prune:
+        plan_ids = {it.agent_id for it in plan}
+        expected_texts = {it.expected_text for it in plan}
+        agents_dir = config_dir / "agents"
+        if agents_dir.is_dir():
+            for f in sorted(agents_dir.glob("nf-*.md")):
+                if f.stem in plan_ids:
+                    continue
+                content = f.read_text(encoding="utf-8")
+                rel = f"agents/{f.name}"
+                if content in expected_texts:
+                    # 安全に削除
+                    if args.dry_run:
+                        print(f"  [prune   ] {f} (dry-run)")
+                    else:
+                        backup = store.backup_file(config_dir, rel)
+                        if backup:
+                            print(f"  [backup  ] {rel} -> {backup}")
+                        f.unlink()
+                        print(f"  [pruned  ] {f}")
+                else:
+                    if not args.force:
+                        print(f"  [kept    ] {f} (内容が生成規則と一致しないため残しました。--force でバックアップ後に削除)")
+                    else:
+                        if args.dry_run:
+                            print(f"  [prune   ] {f} (dry-run, --force)")
+                        else:
+                            backup = store.backup_file(config_dir, rel)
+                            if backup:
+                                print(f"  [backup  ] {rel} -> {backup}")
+                            f.unlink()
+                            print(f"  [pruned  ] {f}")
+
+    if args.dry_run:
+        print("dry-run: no changes made")
     return 0
 
 
@@ -778,6 +981,13 @@ def build_parser() -> argparse.ArgumentParser:
     puse.add_argument("name")
     puse.add_argument("--dry-run", action="store_true")
     puse.add_argument("--force", action="store_true", help="利用者が改変した管理対象をバックアップ後に上書きする")
+    pderive = pprofile.add_parser("derive", help="派生エージェント定義を生成する")
+    pderive.add_argument("--profile", default=None, help="対象プロファイル (既定: 現行または balanced)")
+    pderive.add_argument("--role", default=None, help="生成対象の役割")
+    pderive.add_argument("--model", default=None, help="生成対象のモデル")
+    pderive.add_argument("--prune", action="store_true", help="不要な派生定義を削除する")
+    pderive.add_argument("--dry-run", action="store_true", help="計画と差分のみ表示し、変更しない")
+    pderive.add_argument("--force", action="store_true", help="衝突・改変ファイルをバックアップ後に上書き/削除する")
     p.set_defaults(fn=cmd_profile)
 
     return parser

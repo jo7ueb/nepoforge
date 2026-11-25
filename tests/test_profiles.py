@@ -77,5 +77,94 @@ class TestApply(unittest.TestCase):
         self.assertEqual(text, (store.DATA_DIR / "commands/nfgo.md").read_text(encoding="utf-8"))
 
 
+class TestParseModel(unittest.TestCase):
+    def test_valid_simple(self) -> None:
+        ref = profiles.parse_model("fastmetal/japan-glm-5.3-flash")
+        self.assertEqual(ref.provider, "fastmetal")
+        self.assertEqual(ref.model, "japan-glm-5.3-flash")
+        self.assertIsNone(ref.variant)
+        self.assertEqual(profiles.format_model(ref), "fastmetal/japan-glm-5.3-flash")
+
+    def test_valid_variant(self) -> None:
+        ref = profiles.parse_model("fastmetal/glm-5.3#think")
+        self.assertEqual(ref.variant, "think")
+        self.assertEqual(profiles.format_model(ref), "fastmetal/glm-5.3#think")
+
+    def test_invalid_multiple_hash(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("fastmetal/x#y#z")
+
+    def test_invalid_no_provider(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("justmodel")
+
+    def test_invalid_empty(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("")
+
+
+class TestLoadProfileConfig(unittest.TestCase):
+    def test_roles_only_profile_defaults(self) -> None:
+        cfg = profiles.load_profile_config("balanced")
+        self.assertEqual(len(cfg.candidates), 5)  # 5 models union? at least roles
+        roles_models = set(cfg.roles.values())
+        cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
+        for m in roles_models:
+            self.assertIn(m, cand_models)
+        self.assertEqual(cfg.constraints.max_parallel, 3)
+        self.assertEqual(cfg.task_rules, ())
+
+    def test_unknown_top_level_key_allowed(self) -> None:
+        import json, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.json"
+            data = {"name": "p", "roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS}, "extra_key": 1}
+            path.write_text(json.dumps(data))
+            orig = profiles.profile_dir
+            profiles.profile_dir = lambda: Path(tmp)  # type: ignore[assignment]
+            try:
+                cfg = profiles.load_profile_config("p")
+                self.assertEqual(cfg.name, "p")
+            finally:
+                profiles.profile_dir = orig  # type: ignore[assignment]
+
+    def test_task_rule_model_not_candidate_raises(self) -> None:
+        import json, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.json"
+            data = {
+                "roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS},
+                "task_rules": [{"when": {"role": "implementer"}, "model": "fastmetal/nope"}],
+            }
+            path.write_text(json.dumps(data))
+            orig = profiles.profile_dir
+            profiles.profile_dir = lambda: Path(tmp)  # type: ignore[assignment]
+            try:
+                with self.assertRaises(NepoforgeError):
+                    profiles.load_profile_config("p")
+            finally:
+                profiles.profile_dir = orig  # type: ignore[assignment]
+
+    def test_local_role_model_added_to_candidates(self) -> None:
+        # local profile with a new model in roles → candidate union
+        import json
+        from pathlib import Path
+        lp = store.local_profile_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        data = {"roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS}}
+        data["roles"]["implementer"] = "fastmetal/beam-1.0"
+        lp.write_text(json.dumps(data))
+        try:
+            cfg = profiles.load_profile_config("local")
+            cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
+            self.assertIn("fastmetal/beam-1.0", cand_models)
+        finally:
+            lp.unlink(missing_ok=True)
+
+
 if __name__ == "__main__":
     unittest.main()
