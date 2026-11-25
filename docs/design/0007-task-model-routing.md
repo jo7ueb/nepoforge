@@ -51,7 +51,7 @@
 
 ### 2.2 0005 への改訂案 (採否判断付き)
 
-細粒度分解方針 (T1e 調査の差分案) を含む改訂提案。すべて「表現の明確化」であり、論理フィールドの変更を含まない。0005 の改訂は契約改訂であるため、#52 実装 PR の**先頭コミット**として設計文書を先行反映する (0005 §1「契約変更は共通設計の改訂が先」)。
+細粒度分解方針 (T1e 調査の差分案) を含む改訂提案。すべて「表現の明確化」であり、論理フィールドの変更を含まない。0005 の改訂は契約改訂であるため、#52 実装 PR で設計文書を先行反映する方針とした (0005 §1「契約変更は共通設計の改訂が先」)。実際はレビュー反映の後となり、改訂 (416684c) は実装 (857db4e) と同一 PR 内で契約と実装の最終整合を取る形になった。以後の契約改訂は最初のコミットで行う。
 
 | # | 対象 | 差分案 | 判断 |
 | --- | --- | --- | --- |
@@ -242,7 +242,8 @@ resolve(task, config):
        d. budget: per_task が設定済みで候補が適合しない (#52 では実強制なし。プレースホルダ)
   2. 明示指定 (優先順位 1 — 0005 §5.1)
      task.model_request があれば:
-       - model_request_source == "external" → unresolved (理由: 信頼できない出所)。
+       - model_request_source が信頼できる出所 (`human-config` / `coordinator`) 以外
+         (`external` および未知の値) → unresolved (理由: 信頼できない出所)。
          Issue 本文・子の報告由来の指定は 0005 §4.1 検証規則 4 により禁止。
        - フィルタ済み候補に含まれない → unresolved (候補外の無条件拒否)。
        - 含まれる → resolved_model=model_request。
@@ -325,7 +326,7 @@ nepoforge profile derive [--profile NAME] [--role ROLE --model M] [--prune] [--d
 | 事象 | 扱い |
 | --- | --- |
 | `profile use` 切替 | 基本定義の model 行差し替え (現行どおり) + 新プロファイルの plan を冪等生成。**旧プロファイル由来の不要になった派生ファイルは既定では削除しない** (orphan として報告) |
-| orphan の解消 | `profile derive --prune`: 現行 plan に含まれない `agents/nf-*.md` を削除 (削除前に `store.backup_file` で退避)。内容が現行派生のいずれとも一致しない (改変疑い) ファイルは既定で残す (`--force` でバックアップ後に削除) |
+| orphan の解消 | `profile derive --prune`: 現行 plan に含まれない `agents/nf-*.md` を削除 (削除前に `store.backup_file` で退避)。内容が現在の生成規則 (全プロファイルの roles・candidates から再生成できる全文) のいずれとも一致しない (改変疑い) ファイルは既定で残す (`--force` でバックアップ後に削除) |
 | `uninstall` | `agents/nf-*.md` を所有判定 (`nf*` 名前空間規約) により撤去対象にする。manifest の記録対象ではないため、**内容が現在の生成規則と一致するものは通常削除、一致しないものは既定で残す (バックアップ付き --force)**。manifest 完全撤去条件 (`len(removed) == len(USER_MANAGED_FILES)`) は**現行どおり USER_MANAGED_FILES ベースで維持**し、派生ファイルの有無で uninstall の成否を変えない |
 | `status` | 現行 plan に対する derived の状態 (`ok` / `missing` / `orphan`) を情報表示に追加 (任意。exit コードに影響させない) |
 | `doctor` | (任意) `nf-*.md` と現行 plan の不整合を info として報告 |
@@ -418,7 +419,7 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 | 変更する | `nepoforge/cli.py` | `profile derive` 追加、`profile use` / `init` への事前生成呼び出し、`profile show` への constraints 表示、(任意) `resolve` コマンド・status の derived 表示。4 箇所で同型の期待ハッシュ構築 (`sync_global` / `cmd_status` / `cmd_doctor` / `cmd_profile use`) は**挙動を変えない範囲で**共通ヘルパーへの集約を可とする (任意リファクタ) |
 | 変更する | `nepoforge/data/commands/nfgo.md` | §7.3 の 1 行追加 + Resolver 接続文の更新 (実機検証後)。直書き禁止遵守 |
 | 変更する | `AGENTS.md` | §7.4 の 1 行追加 |
-| 変更する | `docs/design/0005-...md` | §2.2 の R1–R6 (実装 PR の先頭コミットで先行反映) |
+| 変更する | `docs/design/0005-...md` | §2.2 の R1–R6 (実装 PR 内で反映) |
 | 変更する | `docs/architecture.md` | §3.1 に 1 文 (R9)、§10 現状に 1 行 |
 | 変更する | `ROADMAP.md` | Phase 2 前提に 0007 へのリンク 1 行 |
 | 変更する (新規) | `tests/test_resolver.py`・`tests/test_derive.py` | §8.2 |
@@ -447,17 +448,17 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 1. `nepoforge profile derive` 実行後、`opencode api get /api/agent` で派生定義の登録と model 解釈 (`{providerID, id, variant?}`) を確認。
 2. `opencode models` で有効候補の実在確認。
 
-**課金あり・実機 (承認待ち — 明示的な許可を得るまで実施しない):**
+**課金あり・実機 (承認済みの範囲で実施):**
 
-3. 派生定義での実起動 → message API で actual_model 照合 (0005 §9.2 (3))。
-4. 派生定義の並列起動と時間的重複 (0002 §3 手法)。
-5. resolved_model ≠ actual_model の意図的差分 (variant 指定等) がある場合の突合動作。
+3. **実施済み** — 派生定義 (`nf-expert-beam-1.0`) での実起動 → message API で `agent` / `model` を照合し resolved_model と一致することを確認 (0005 §9.2 (3))。`GET /api/agent` での登録確認も実施。証跡は PR 本文に記録し、定義は確認後に撤去した。
+4. 未実施 — 派生定義の並列起動と時間的重複 (0002 §3 手法)。並列上限の既定値は未実測のまま暫定。
+5. 未実施 — resolved_model ≠ actual_model の意図的差分 (variant 指定等) がある場合の突合動作。
 
-**承認待ちの運用上の扱い:** 3–5 の証跡が得られるまで、派生定義に依存する経路 (task_rules による役割既定以外の割当) を本番運用に使用しない (0005 制約・残存リスク 7 を引き継ぐ)。nfgo.md の「未接続」一文はその後で差し替える。
+**運用上の扱い:** 3 の証跡が PR 本文に記録されたため、承認済み候補内で派生定義を委譲先に指定してよい。指定後は対象セッションの `agent`・`model` を message API で突合する (nfgo.md「タスク計画の管理」)。4–5 の未実測点と 0005 制約・残存リスク 7 (budget の実強制なし) は残存課題として扱う。
 
 ### 8.4 残存課題
 
-1. 派生定義の実機妥当性 (課金試験承認待ち — §8.3)。
+1. 派生定義の実機妥当性: 単発起動と actual_model 突合は実施済み。並列起動・重複計測と variant 差分の突合は未実施 (§8.3 の 4–5)。
 2. capabilities / context 長の機械可読情報源は未確認 (0005 §7.3)。#52 では人間承認の選定記録 (`approval_ref`) で代替。#14/#12 で整備。
 3. budget の実強制なし (fastmetal の cost は常に 0)。#15 で実装。
 4. 同時 running 上限 3 は暫定既定 (実測は #49/#12)。

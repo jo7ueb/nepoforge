@@ -364,42 +364,13 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
 
     # 派生定義 (agents/nf-*.md) の撤去 (#52 §5.5)
     # 現行生成規則と内容が一致するものを通常削除、不一致は既定で残す
-    model_strs: set[str] = set()
-    for pname in profiles.available_profiles():
-        try:
-            c = profiles.load_profile_config(pname)
-            for r, m in c.roles.items():
-                model_strs.add(m)
-            for cand in c.candidates:
-                model_strs.add(profiles.format_model(cand.ref))
-        except NepoforgeError:
-            pass
-    # local
-    try:
-        c = profiles.load_profile_config("local")
-        for r, m in c.roles.items():
-            model_strs.add(m)
-        for cand in c.candidates:
-            model_strs.add(profiles.format_model(cand.ref))
-    except NepoforgeError:
-        pass
-    safe_ids: set[str] = set()
-    safe_texts: set[str] = set()
-    for role in store.USER_AGENT_IDS:
-        for ms in model_strs:
-            try:
-                aid = derive.agent_id_for(role, ms)
-                text = derive.derive_text(role, ms)
-            except NepoforgeError:
-                continue
-            safe_ids.add(aid)
-            safe_texts.add(text)
+    safe_texts = derive.safe_texts()
     agents_dir = config_dir / "agents"
     if agents_dir.is_dir():
         for f in sorted(agents_dir.glob("nf-*.md")):
             rel = f"agents/{f.name}"
             content = f.read_text(encoding="utf-8")
-            safe = (f.stem in safe_ids and content in safe_texts) or (content in safe_texts)
+            safe = content in safe_texts
             if not safe and not args.force:
                 print(f"  [kept    ] {rel} (内容が生成規則と一致しないため残しました。不要なら --force)")
                 continue
