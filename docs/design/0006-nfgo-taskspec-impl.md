@@ -1,6 +1,6 @@
 # 設計メモ 0006: /nfgo への共通契約適用 (#49 残作業の実装設計)
 
-状態: 起案 (設計のみ。本メモは docs/design/ 配下の追加のみ。nfgo.md・AGENTS.md・tests の編集は実装 PR (#49) で行う)
+状態: 実装済み (#49 本 PR で nfgo.md・AGENTS.md・tests に適用)
 関連: #49 (実装対象), #53 (契約の正本 — [設計メモ 0005](0005-common-task-contract.md)), #52 (Model Resolver), #51 (レビュー観点), #47 (配布), #8
 前提: [設計メモ 0005](0005-common-task-contract.md) §4/§7.4/§8/§9.1/§10、[設計メモ 0004](0004-parallel-delegation.md)、[architecture.md](../architecture.md) §3.1、[AGENTS.md](../../AGENTS.md)
 外部前提: OpenCode v2.4.x (0005 §7 の事実 — 起動単位のモデル指定不可・子の報告は最後の text のみ・並列数上限は公式に不在・子からの再委譲不可)
@@ -14,7 +14,7 @@
 1. **最小差分**: nfgo.md のステップ構造 (0–4)・ステップ番号・停止条件・禁止事項・git/gh 分担は維持する。並列委譲 (3.1 の同一ブロック起動) も維持する。
 2. **拡張形の差し替え**: 既存「委譲契約 (6 項目)」を TaskSpec 必須 7 項目へ拡張し、「子の報告の扱い」を TaskResult 慣約へ拡張する。新設する小節は「タスク計画の管理 (Coordinator 規則)」の 1 つのみ。
 3. **機械化しない**: 契約検証関数・状態保持・モデルルーティングは作らない (0005 §4.1 の機械検証は後続実装、Resolver は #52)。nfgo.md の規定は primary が読んで実行できる運用文にとどめる。
-4. **直書き禁止**: 報告タグ名・モデル名・`experimental.*` は nfgo.md に書かない (0005 §2.1 事実 5、architecture.md §3 分離の原則)。
+4. **直書き禁止**: 報告タグ名・モデル名・`experimental.*` は nfgo.md に新規に書かない (既存の `state="..."` 表記は維持する。0005 §2.1 事実 5、architecture.md §3 分離の原則)。
 5. **sessionID 対応**: OpenCode の報告は sessionID 単位で届き `task_id` という語は出ないため、nfgo 内では task_id を論理識別子とし、起動時に sessionID を対応付ける表現にする。
 
 ## 2. 対応表 (現行の 6 項目 → TaskSpec)
@@ -223,6 +223,7 @@ class TestWorkflowContract(unittest.TestCase):
 | 0005 §10 の 15 項目テンプレート全文を毎委譲で書かせる | 運用負荷が高く、任意項目 (capabilities/complexity/risk) の実効性が #49 にない。必須 7 項目 + 範囲/依存の運用粒度に留める |
 | 契約検証の Python 実装 (循環依存検出・write_scope 検証) を #49 で追加 | 0005 §4.1 が機械検証を後続実装に委ねており、#49 の受入は Markdown 規定の存在確認で足りる。検証関数は #52 で Resolver 接続時に純粋関数として実装する |
 | 状態遷移 (pending/ready/running/…) の全列挙を nfgo.md に書く | 運用に必要なのは ready 条件・blocked・再試行上限のみ。完全な状態図は 0005 §4.4 が正本 |
+| executor=tool の判定 (0005 §4.2) を nfgo.md に書かない | レビュー指摘を受け「委譲しない作業」の 1 行として反映した (決定的作業は primary が遂行)。ModelResolution の executor 選択そのものは #52 の Resolver 接続時に実装する |
 | レビュー観点カタログ (Requirements / Correctness / Security 等) を nfgo.md に列挙 | カタログ本体は #51。concern の記載要件のみ先行導入する |
 | task_id ↔ sessionID 対応の永続化 (manifest・DB) | 0005 §3.3 が状態の正本を Coordinator セッションに置く。永続化は #21/#31/#32 で再検討 |
 | AGENTS.md の開発フロー番号リスト自体を改訂 | 0004 §7 で不採用済み。小節への追記で足りる |
