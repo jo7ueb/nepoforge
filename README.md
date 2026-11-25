@@ -103,8 +103,14 @@ Phase 1 の `nf_workbench.py` によるリポジトリ単位導入からの移�
 ```sh
 nepoforge profile list            # economy / balanced (既定) / performance / local
 nepoforge profile use economy     # 管理下エージェントのモデル割当を一括差し替え
-nepoforge profile show            # 現行プロファイルの役割→モデルを表示
+nepoforge profile show            # 現行プロファイルの役割→モデル・並列上限・タスク別ルール数を表示
+nepoforge profile derive --dry-run  # タスク別ルールで必要な派生定義の生成計画を確認する
+nepoforge profile derive          # 派生定義 (agents/nf-<role>-<slug>.md) を生成する
 ```
+
+`profile derive` は、プロファイルの `task_rules` が参照する (役割, モデル) の組合せのうち役割既定と異なるものについて、元の役割定義の `model:` 行だけを差し替えた派生エージェント定義 (`nf-<role>-<slug>`) を生成します。権限は元の役割から複製され、モデルを変えても拡大しません。生成物は再生成可能なため削除・上書きの対象は内容が生成規則と一致するものに限られます。既存の非管理ファイルは上書きしません (`--force` でバックアップ後に上書き)。
+
+`subagent` 権限に明示的な許可リストを設定している場合は、派生 ID を使うために `nf-*` を allow に追加してください (権限設定は CLI が書き換えません)。並列上限はプロファイルの `constraints.max_parallel` (未設定時 3) で調整します。
 
 個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。プロジェクト固有の上書きは、そのリポジトリの設定で `agents.<id>.model` を定義します (プロジェクト設定がグローバル定義に上書きマージされるため)。
 

@@ -40,6 +40,11 @@ class ModelResolution:
     status: str = "selected"
 
 
+# 明示指定 (model_request) を採用してよい出所 (0005 §4.1 検証規則 4)。
+# これ以外 ("external" など未知の値も含む) は信頼できない入力として拒否する。
+TRUSTED_SOURCES = frozenset({"human-config", "coordinator"})
+
+
 def _provider_approved_ids(config: Any) -> set[str]:
     ids: set[str] = set()
     for p in getattr(config.constraints, "providers", ()):
@@ -107,14 +112,16 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
 
     # 1/2. 明示指定
     if task.model_request is not None:
-        if task.model_request_source == "external":
+        if task.model_request_source not in TRUSTED_SOURCES:
+            # 信頼できる出所 (人間設定・Coordinator の計画) 以外からの明示指定は
+            # Issue 本文・子の報告など外部入力を含むため採用しない (0005 §4.1 検証規則 4)
             return ModelResolution(
                 task_id=task.task_id,
                 executor=task.executor,
                 role=task.role,
                 resolved_model=None,
                 binding="",
-                reason="unresolved: external",
+                reason="unresolved: untrusted_source",
                 constraints_applied=tuple(skips),
                 status="unresolved",
             )
@@ -125,7 +132,7 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
                 role=task.role,
                 resolved_model=None,
                 binding="",
-                reason="unresolved: ineligible",
+                reason="unresolved: explicit_not_eligible",
                 constraints_applied=tuple(skips),
                 status="unresolved",
             )
@@ -164,7 +171,7 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
             role=task.role,
             resolved_model=None,
             binding="",
-            reason="unresolved: ineligible",
+            reason="unresolved: role_default_ineligible",
             constraints_applied=tuple(skips),
             status="unresolved",
         )

@@ -356,7 +356,7 @@ LLM 候補のフィルタ条件: 権限・送信先・データ保持条件 (承
 - 選択状態: selected
 ```
 
-明示指定の変形: `model_request: fastmetal/japan-deepseek-v4.1-flash-1017` の場合、同モデルは承認済み候補 (performance プロファイルに登場) に含まれるため、優先順位 1 (許可される明示指定) で resolved となる。ただし役割既定と異なるため物理バインディングは派生定義 `expert-<slug>` となり、生成は #52 の実装に依存する (**#49 では unresolved (停止/報告)**)。候補外のモデルが指定された場合は無条件に unresolved とする。
+明示指定の変形: `model_request: fastmetal/japan-deepseek-v4.1-flash-1017` の場合、同モデルは承認済み候補 (performance プロファイルに登場) に含まれるため、優先順位 1 (許可される明示指定) で resolved となる。ただし役割既定と異なるため物理バインディングは派生定義 `nf-expert-<slug>` となり、生成は #52 の実装に依存する (**#49 では unresolved (停止/報告)**)。候補外のモデルが指定された場合は無条件に unresolved とする。
 
 ```markdown
 ### TaskResult

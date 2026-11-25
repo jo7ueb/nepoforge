@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import unittest
+import dataclasses
 
 from nepoforge import profiles, resolver
 from nepoforge.profiles import ModelRef, Candidate, ProfileConfig, TaskRule, Constraints, ProviderConstraint, Budget
@@ -52,6 +53,23 @@ class TestResolve(unittest.TestCase):
         ti = TaskInput(task_id="t1", role="implementer", model_request=ModelRef("fastmetal", "nope", None), model_request_source="human-config")
         res = resolve(ti, cfg)
         self.assertEqual(res.status, "unresolved")
+
+    def test_unknown_source_unresolved(self) -> None:
+        # 3 値以外の未知の出所も信頼しない (T5a 指摘 9)
+        cfg = _cfg_with_rules()
+        ti = TaskInput(task_id="t1", role="implementer", model_request=ModelRef("fastmetal", "kimi-k3.1-pro", None), model_request_source="issue-body")
+        res = resolve(ti, cfg)
+        self.assertEqual(res.status, "unresolved")
+        self.assertEqual(res.reason, "unresolved: untrusted_source")
+
+    def test_unapproved_provider_filtered(self) -> None:
+        # 承認済みでない provider の候補は選ばない (設計 §4.2 step 1a)
+        cfg = _cfg_with_rules()
+        unapproved = dataclasses.replace(cfg, constraints=Constraints(providers=(ProviderConstraint(id="otherhost", approved=True, destination="d", retention="r"),), max_parallel=3, budget=Budget(per_task=None, note="n")))
+        ti = TaskInput(task_id="t1", role="implementer")
+        res = resolve(ti, unapproved)
+        self.assertEqual(res.status, "unresolved")
+        self.assertEqual(res.reason, "unresolved: role_default_ineligible")
 
     def test_task_rule_first_match(self) -> None:
         rules = (

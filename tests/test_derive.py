@@ -140,6 +140,53 @@ class TestDeriveCLI(IsolatedEnv):
         self.assertEqual(cli.main(["profile", "derive", "--prune", "--force"]), 0)
         self.assertFalse(orphan.exists())
 
+    def test_prune_removes_legitimate_orphan_without_force(self) -> None:
+        # 旧プロファイル由来の正規生成物は --force なしで backup 付き削除される
+        self.assertEqual(cli.main(["init"]), 0)
+        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        derived = store.opencode_dir() / "agents" / "nf-implementer-kimi-k3.1-pro.md"
+        self.assertTrue(derived.is_file())
+        # balanced の task_rules は空なので、この派生定義は orphan になる
+        self.assertEqual(cli.main(["profile", "derive", "--prune"]), 0)
+        self.assertFalse(derived.exists())
+        backups = list((store.state_dir() / store.BACKUP_DIRNAME).rglob("nf-implementer-kimi-k3.1-pro.md"))
+        self.assertTrue(backups)
+
+    def test_prune_keeps_modified_orphan_without_force(self) -> None:
+        self.assertEqual(cli.main(["init"]), 0)
+        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        derived = store.opencode_dir() / "agents" / "nf-implementer-kimi-k3.1-pro.md"
+        derived.write_text(derived.read_text(encoding="utf-8") + "\n# user edit\n", encoding="utf-8")
+        self.assertEqual(cli.main(["profile", "derive", "--prune"]), 0)
+        self.assertTrue(derived.exists())
+
+    def test_roleless_task_rule_plans_all_roles(self) -> None:
+        # role 非指定ルールは全役割の派生定義を計画する (黙って漏らさない)
+        import json
+
+        lp = store.local_profile_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        balanced = profiles.load_profile("balanced")
+        data = {
+            "roles": dict(balanced),
+            "task_rules": [{"when": {"risk": "low"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017"}],
+        }
+        lp.write_text(json.dumps(data))
+        config = profiles.load_profile_config("local")
+        plan = derive.derive_plan(config, target_dir=store.opencode_dir())
+        roles = {it.role for it in plan}
+        self.assertEqual(roles, set(store.USER_AGENT_IDS))
+
+    def test_derive_does_not_touch_managed_files(self) -> None:
+        self.assertEqual(cli.main(["init"]), 0)
+        before = list(store.USER_MANAGED_FILES)
+        manifest_before = store.load_manifest(store.manifest_path())
+        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        self.assertEqual(list(store.USER_MANAGED_FILES), before)
+        manifest_after = store.load_manifest(store.manifest_path())
+        self.assertEqual(manifest_before, manifest_after)
+        self.assertFalse(any(rel.startswith("agents/nf-") for rel in manifest_after.get("files", {})))
+
     def test_uninstall_removes_derived_matching(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)

@@ -734,10 +734,9 @@ def cmd_profile_derive(args: argparse.Namespace) -> int:
     role = args.role
     model = args.model
     model_ref = None
-    if model is not None:
-        model_ref = profiles.parse_model(model)
-
     try:
+        if model is not None:
+            model_ref = profiles.parse_model(model)
         plan = derive.derive_plan(config, role=role, model=model_ref, target_dir=config_dir)
     except NepoforgeError as exc:
         print(f"error: {exc}", file=sys.stderr)
@@ -769,7 +768,9 @@ def cmd_profile_derive(args: argparse.Namespace) -> int:
     # prune
     if args.prune:
         plan_ids = {it.agent_id for it in plan}
-        expected_texts = {it.expected_text for it in plan}
+        # 正規 orphan (旧プロファイル由来の生成物) は現行 plan に含まれないため、
+        # 内容一致の判定には生成規則全体の集合を使う (#52 レビュー指摘)
+        regenerable = derive.safe_texts()
         agents_dir = config_dir / "agents"
         if agents_dir.is_dir():
             for f in sorted(agents_dir.glob("nf-*.md")):
@@ -777,7 +778,7 @@ def cmd_profile_derive(args: argparse.Namespace) -> int:
                     continue
                 content = f.read_text(encoding="utf-8")
                 rel = f"agents/{f.name}"
-                if content in expected_texts:
+                if content in regenerable:
                     # 安全に削除
                     if args.dry_run:
                         print(f"  [prune   ] {f} (dry-run)")

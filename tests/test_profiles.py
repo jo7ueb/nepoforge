@@ -6,6 +6,7 @@ import unittest
 
 from nepoforge import profiles, store
 from nepoforge.store import NepoforgeError
+from tests._base import IsolatedEnv
 
 AGENT_TMPL = """---
 description: test agent
@@ -103,10 +104,16 @@ class TestParseModel(unittest.TestCase):
             profiles.parse_model("")
 
 
-class TestLoadProfileConfig(unittest.TestCase):
+class TestLoadProfileConfig(IsolatedEnv):
     def test_roles_only_profile_defaults(self) -> None:
         cfg = profiles.load_profile_config("balanced")
-        self.assertEqual(len(cfg.candidates), 5)  # 5 models union? at least roles
+        bundled = set()
+        for name in profiles.available_profiles():
+            if name == "local":
+                continue
+            bundled.update(profiles.load_profile(name).values())
+        # 既定候補は同梱プロファイルの roles の和集合
+        self.assertEqual(len(cfg.candidates), len(bundled))
         roles_models = set(cfg.roles.values())
         cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
         for m in roles_models:
@@ -149,21 +156,21 @@ class TestLoadProfileConfig(unittest.TestCase):
             finally:
                 profiles.profile_dir = orig  # type: ignore[assignment]
 
+
+class TestLocalProfileConfig(IsolatedEnv):
+    """local プロファイルを使うテスト。XDG を隔離して実ユーザー設定に触れない。"""
+
     def test_local_role_model_added_to_candidates(self) -> None:
-        # local profile with a new model in roles → candidate union
         import json
-        from pathlib import Path
+
         lp = store.local_profile_path()
         lp.parent.mkdir(parents=True, exist_ok=True)
         data = {"roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS}}
         data["roles"]["implementer"] = "fastmetal/beam-1.0"
         lp.write_text(json.dumps(data))
-        try:
-            cfg = profiles.load_profile_config("local")
-            cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
-            self.assertIn("fastmetal/beam-1.0", cand_models)
-        finally:
-            lp.unlink(missing_ok=True)
+        cfg = profiles.load_profile_config("local")
+        cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
+        self.assertIn("fastmetal/beam-1.0", cand_models)
 
 
 if __name__ == "__main__":

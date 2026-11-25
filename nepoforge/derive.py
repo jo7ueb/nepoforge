@@ -126,23 +126,23 @@ def derive_plan(
             when = getattr(rule, "when", None)
             if not isinstance(when, dict):
                 continue
-            r = when.get("role")
-            if r is None or r not in store.USER_AGENT_IDS:
-                continue
             model_str = getattr(rule, "model", None)
             if not isinstance(model_str, str):
                 continue
-            key = (r, model_str)
-            if key not in seen:
-                seen.add(key)
-                pairs.append(key)
+            r = when.get("role")
+            # role 非指定ルールは全役割に適用されるため、全役割の派生定義を計画する
+            # (黙って対象から漏らすと binding 未生成のまま実行され得る — #52 レビュー指摘)
+            roles = (r,) if r in store.USER_AGENT_IDS else store.USER_AGENT_IDS
+            for target_role in roles:
+                key = (target_role, model_str)
+                if key not in seen:
+                    seen.add(key)
+                    pairs.append(key)
 
     # 役割既定と同一のものは除外
     filtered: list[tuple[str, str]] = []
     for r, m in pairs:
-        default = config.roles.get(r) if hasattr(config, "roles") else None
-        if isinstance(config.roles, dict):
-            default = config.roles.get(r)
+        default = config.roles.get(r) if isinstance(config.roles, dict) else None
         if default == m:
             continue
         filtered.append((r, m))
@@ -173,3 +173,27 @@ def derive_plan(
             )
         )
     return items
+
+def safe_texts() -> set[str]:
+    """現在の生成規則で再現できる派生定義の全文集合を返す。
+
+    `--prune` と uninstall が「正規の生成物」と「利用者改変・所有物」を
+    区別するために使う。既存導入環境の破壊を避けるため、内容が一致しない
+    ファイルは既定では削除しない。
+    """
+    models: set[str] = set()
+    for name in profiles.available_profiles():
+        try:
+            config = profiles.load_profile_config(name)
+        except NepoforgeError:
+            continue
+        models.update(config.roles.values())
+        models.update(profiles.format_model(c.ref) for c in config.candidates)
+    texts: set[str] = set()
+    for role in store.USER_AGENT_IDS:
+        for model in models:
+            try:
+                texts.add(derive_text(role, model))
+            except NepoforgeError:
+                continue
+    return texts
