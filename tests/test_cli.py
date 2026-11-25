@@ -462,5 +462,32 @@ class TestCanonicalData(IsolatedEnv):
         self.assertEqual(config.read_text(encoding="utf-8"), '{"model": "user/model"}')
 
 
+class TestWorkflowContract(unittest.TestCase):
+    """nfgo.md が共通契約 (設計メモ 0005) の必須規定を含むこと (#49)。"""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.text = (store.DATA_DIR / "commands" / "nfgo.md").read_text(encoding="utf-8")
+
+    def test_required_headings(self) -> None:
+        for heading in ("### タスク計画の管理", "### 委譲契約", "### 子の報告の扱い"):
+            self.assertIn(heading, self.text)
+
+    def test_task_spec_and_result_fields(self) -> None:
+        for keyword in ("task_id", "issue_ref", "objective", "inputs", "expected_output",
+                        "acceptance_criteria", "depends_on", "read_scope", "write_scope",
+                        "concern", "sessionID", "status", "summary", "actual_model"):
+            self.assertIn(keyword, self.text)
+
+    def test_state_rules(self) -> None:
+        for keyword in ("unresolved", "blocked", "ready", "受理", "再委譲", "再検証"):
+            self.assertIn(keyword, self.text)
+
+    def test_no_engine_or_model_details(self) -> None:
+        # 実装詳細 (報告タグ・モデル名・experimental 設定) を直書きしない
+        for forbidden in ("<background-result>", "fastmetal/", "subagent_depth"):
+            self.assertNotIn(forbidden, self.text)
+
+
 if __name__ == "__main__":
     unittest.main()
