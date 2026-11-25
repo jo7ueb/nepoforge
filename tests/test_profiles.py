@@ -6,6 +6,7 @@ import unittest
 
 from nepoforge import profiles, store
 from nepoforge.store import NepoforgeError
+from tests._base import IsolatedEnv
 
 AGENT_TMPL = """---
 description: test agent
@@ -75,6 +76,118 @@ class TestApply(unittest.TestCase):
     def test_render_command_file_is_untouched(self) -> None:
         text = profiles.render("commands/nfgo.md", {"architect": "fastmetal/beam-1.0"})
         self.assertEqual(text, (store.DATA_DIR / "commands/nfgo.md").read_text(encoding="utf-8"))
+
+
+class TestParseModelWhitespace(unittest.TestCase):
+    """モデル表記の空白・制御文字は読み込み時に拒否する (#52 監査 W01)。"""
+
+    def test_internal_space_rejected(self) -> None:
+        for text in ("p/ m", "a b/c d", "fastmetal/glm 5.3"):
+            with self.assertRaises(NepoforgeError):
+                profiles.parse_model(text)
+
+    def test_surrounding_space_trimmed(self) -> None:
+        ref = profiles.parse_model("  fastmetal/beam-1.0  ")
+        self.assertEqual(profiles.format_model(ref), "fastmetal/beam-1.0")
+
+    def test_control_char_rejected(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("fastmetal/beam\t1.0")
+
+
+class TestParseModel(unittest.TestCase):
+    def test_valid_simple(self) -> None:
+        ref = profiles.parse_model("fastmetal/japan-glm-5.3-flash")
+        self.assertEqual(ref.provider, "fastmetal")
+        self.assertEqual(ref.model, "japan-glm-5.3-flash")
+        self.assertIsNone(ref.variant)
+        self.assertEqual(profiles.format_model(ref), "fastmetal/japan-glm-5.3-flash")
+
+    def test_valid_variant(self) -> None:
+        ref = profiles.parse_model("fastmetal/glm-5.3#think")
+        self.assertEqual(ref.variant, "think")
+        self.assertEqual(profiles.format_model(ref), "fastmetal/glm-5.3#think")
+
+    def test_invalid_multiple_hash(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("fastmetal/x#y#z")
+
+    def test_invalid_no_provider(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("justmodel")
+
+    def test_invalid_empty(self) -> None:
+        with self.assertRaises(NepoforgeError):
+            profiles.parse_model("")
+
+
+class TestLoadProfileConfig(IsolatedEnv):
+    def test_roles_only_profile_defaults(self) -> None:
+        cfg = profiles.load_profile_config("balanced")
+        bundled = set()
+        for name in profiles.available_profiles():
+            if name == "local":
+                continue
+            bundled.update(profiles.load_profile(name).values())
+        # 既定候補は同梱プロファイルの roles の和集合
+        self.assertEqual(len(cfg.candidates), len(bundled))
+        roles_models = set(cfg.roles.values())
+        cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
+        for m in roles_models:
+            self.assertIn(m, cand_models)
+        self.assertEqual(cfg.constraints.max_parallel, 10)
+        self.assertEqual(cfg.task_rules, ())
+
+    def test_unknown_top_level_key_allowed(self) -> None:
+        import json, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.json"
+            data = {"name": "p", "roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS}, "extra_key": 1}
+            path.write_text(json.dumps(data))
+            orig = profiles.profile_dir
+            profiles.profile_dir = lambda: Path(tmp)  # type: ignore[assignment]
+            try:
+                cfg = profiles.load_profile_config("p")
+                self.assertEqual(cfg.name, "p")
+            finally:
+                profiles.profile_dir = orig  # type: ignore[assignment]
+
+    def test_task_rule_model_not_candidate_raises(self) -> None:
+        import json, tempfile
+        from pathlib import Path
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "p.json"
+            data = {
+                "roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS},
+                "task_rules": [{"when": {"role": "implementer"}, "model": "fastmetal/nope"}],
+            }
+            path.write_text(json.dumps(data))
+            orig = profiles.profile_dir
+            profiles.profile_dir = lambda: Path(tmp)  # type: ignore[assignment]
+            try:
+                with self.assertRaises(NepoforgeError):
+                    profiles.load_profile_config("p")
+            finally:
+                profiles.profile_dir = orig  # type: ignore[assignment]
+
+
+class TestLocalProfileConfig(IsolatedEnv):
+    """local プロファイルを使うテスト。XDG を隔離して実ユーザー設定に触れない。"""
+
+    def test_local_role_model_added_to_candidates(self) -> None:
+        import json
+
+        lp = store.local_profile_path()
+        lp.parent.mkdir(parents=True, exist_ok=True)
+        data = {"roles": {r: "fastmetal/japan-glm-5.3-flash" for r in store.USER_AGENT_IDS}}
+        data["roles"]["implementer"] = "fastmetal/beam-1.0"
+        lp.write_text(json.dumps(data))
+        cfg = profiles.load_profile_config("local")
+        cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
+        self.assertIn("fastmetal/beam-1.0", cand_models)
 
 
 if __name__ == "__main__":
