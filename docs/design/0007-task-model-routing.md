@@ -56,10 +56,10 @@
 | # | 対象 | 差分案 | 判断 |
 | --- | --- | --- | --- |
 | R1 | 0005 §3.3 規則 5・7 | 「全部の調査完了を一律に待たず」「編集は排他的に割当たった範囲内でのみ並列」に、**工程バリアを作らない** (調査→設計→実装の工程単位の一括直列化をしない) ことを明記 | 採用 |
-| R2 | 0005 §4.4 ready 条件 d | 「並列上限内 (§7.5)」に「既定上限はプロファイルの `constraints.max_parallel` (未設定なら 3)」を補記 | 採用 |
+| R2 | 0005 §4.4 ready 条件 d | 「並列上限内 (§7.5)」に「既定上限はプロファイルの `constraints.max_parallel` (未設定なら 10)」を補記 | 採用 |
 | R3 | 0005 §5.1 タスク別ルール | 「設定はプロファイル側に置く」に「スキーマと照合順序は設計メモ 0007 §3/§4」の参照を追加 | 採用 |
 | R4 | 0005 §7.4 規則 2 | 派生定義の**命名を `nf-<role>-<slug>` に確定** (0005 は `<role>-<slug>` を例示し、命名確定を #52 に委ねていた)。生成範囲を「承認済み候補 × role の全組合せ」から「**プロファイルの task_rules が参照する (role, model) ペア + 明示要求されたペア**」に絞る (25 ファイル相当の無用な生成を避ける) | 採用 (0005 が #52 に委ねていた項目の確定) |
-| R5 | 0005 §7.5 | 同時 running 既定 3 を**暫定既定**と明記し、調整方法 (`constraints.max_parallel`) を記載 | 採用 |
+| R5 | 0005 §7.5 | 同時 running の既定値を明記し、調整方法 (`constraints.max_parallel`) を記載 | 採用 |
 | R6 | 0005 §8 影響範囲表 | #52 行の変更対象に `nepoforge/resolver.py`・`nepoforge/derive.py`・`tests/test_resolver.py`・`tests/test_derive.py` を追加 | 採用 |
 | R7 | AGENTS.md「委譲と並列実行」 | 細粒度分解の 1 行を追加 (§7.2)。数値 (同時 running 上限) は AGENTS.md に書かない (T1e 確認: 現行の記載なし) | 採用 |
 | R8 | nfgo.md 3.0 と「タスク計画の管理」 | バリア禁止・上限の調整可能性・Resolver 接続文の更新 (§7)。**直書き禁止ルール (報告タグ・モデル名・`experimental.*` を書かない) を遵守**する | 採用 |
@@ -133,7 +133,7 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
         "approval_ref": "0001 §3 / #52 PR"
       }
     ],
-    "max_parallel": 3,
+    "max_parallel": 10,
     "budget": { "per_task": null, "note": "#52 では強制しない (#15 で実装)" }
   }
 }
@@ -158,7 +158,7 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
 | `candidates` | 同梱 3 プロファイル roles の和集合 + local の roles の値 (capabilities / context_tokens は null = 情報なし) |
 | `task_rules` | 空配列 (Resolver は 明示指定 → 役割デフォルト の 2 段で動く) |
 | `constraints.providers` | `[{"id": "fastmetal", "approved": true, ...}]` (同梱プロファイルに登場する provider の集合) |
-| `constraints.max_parallel` | 3 (暫定既定 — 0005 §7.5) |
+| `constraints.max_parallel` | 10 (0005 §7.5。2026-11-25 の人間判断で 3 から変更) |
 | `constraints.budget` | `{ "per_task": null, "note": "..." }` |
 
 ## 4. Model Resolver
@@ -386,7 +386,7 @@ nepoforge resolve --file PATH     # 任意: TaskInput の JSON を読み ModelRe
 
 ### 7.2 並列上限の暫定既定と調整
 
-- 現行 nfgo.md「タスク計画の管理」の「同時 running 数が既定上限 (3) 内」を「**既定上限内 (暫定既定 3。プロファイルの `constraints.max_parallel` で調整できる)**」に改める (R5/R8)。`nepoforge profile show` で確認できる。
+- 現行 nfgo.md「タスク計画の管理」の「同時 running 数が既定上限 (3) 内」を「**既定上限内 (既定 10。プロファイルの `constraints.max_parallel` で調整できる)**」に改める (R5/R8)。2026-11-25 の人間判断で既定値を 3 から 10 に変更した。`nepoforge profile show` で確認できる。
 - 並列数の公式上限は不在 (0005 §7.2 事実 10) であり、上限は Coordinator 側ポリシー。実測に基づく確定は #49 実装 PR (0006 §9 論点 1) と #12 の観測に委ねる。
 - AGENTS.md には数値を書かない (T1e 確認: 現行の記載なし。R7 は分解方針のみ)。
 
@@ -461,7 +461,7 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 1. 派生定義の実機妥当性: 単発起動と actual_model 突合は実施済み。並列起動・重複計測と variant 差分の突合は未実施 (§8.3 の 4–5)。
 2. capabilities / context 長の機械可読情報源は未確認 (0005 §7.3)。#52 では人間承認の選定記録 (`approval_ref`) で代替。#14/#12 で整備。
 3. budget の実強制なし (fastmetal の cost は常に 0)。#15 で実装。
-4. 同時 running 上限 3 は暫定既定 (実測は #49/#12)。
+4. 同時 running 上限 10 は実測前の運用値 (2026-11-25 の人間判断で 3 から変更)。#12 の観測で再調整する。
 5. `#variant` の fastmetal での実用性は未確認。既定運用は variant なしとする。
 6. actual_model と resolved_model の不一致を「意図しない切替」と判定する基準の精密化 (#12 の記録で)。
 
@@ -491,7 +491,7 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 1. 本設計の承認 (0005 改訂 R1–R9 を含む) — **承認済み**。
 2. 命名 `nf-<role>-<slug>` の承認 (0005 例示からの変更 — §5.2) — **承認済み**。
 3. 課金あり実機試験 (§8.3 の 3–5) の実施許可 — **最小限の実施を承認** (結果は PR に記録)。
-4. `constraints.max_parallel` 既定値 3 の暫定承認 (実測後に確定)。
+4. `constraints.max_parallel` 既定値 3 の暫定承認 (実測後に確定) — **2026-11-25 に既定値 10 へ変更**。
 5. `nepoforge resolve` コマンドの要否 (任意扱い)。本 PR では見送り (純粋関数の単体テストと確認ハーネスで代替)。
 
 ## 11. #52 完了条件との対応 (受入の目安)

@@ -204,7 +204,7 @@ class Budget:
 @dataclass(frozen=True)
 class Constraints:
     providers: tuple[ProviderConstraint, ...] = field(default_factory=tuple)
-    max_parallel: int = 3
+    max_parallel: int = 10
     budget: Budget | None = None
 
     def __getitem__(self, key: str) -> Any:
@@ -346,7 +346,7 @@ def load_profile_config(name: str) -> ProfileConfig:
         )
     approved_ids = {p.id for p in providers if p.approved}
 
-    max_parallel = raw_constraints.get("max_parallel", 3)
+    max_parallel = raw_constraints.get("max_parallel", 10)
     if isinstance(max_parallel, bool) or not isinstance(max_parallel, int):
         raise NepoforgeError(f"'constraints.max_parallel' must be an integer: {path}")
     if max_parallel < 1:

@@ -118,7 +118,7 @@ class TestLoadProfileConfig(IsolatedEnv):
         cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
         for m in roles_models:
             self.assertIn(m, cand_models)
-        self.assertEqual(cfg.constraints.max_parallel, 3)
+        self.assertEqual(cfg.constraints.max_parallel, 10)
         self.assertEqual(cfg.task_rules, ())
 
     def test_unknown_top_level_key_allowed(self) -> None:
