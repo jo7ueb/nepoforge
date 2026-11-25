@@ -64,12 +64,39 @@ nepoforge enable          # .opencode/opencode.jsonc (permissions のみ) を作
 nepoforge disable         # 撤去 (管理対象のみ)
 ```
 
-### 状態確認・診断・更新・削除
+### アップデート
+
+Nepoforge の更新は、**パッケージ本体の更新 → OpenCode 向け配布物の同期**の 2 段階です。`nepoforge update` 単独では GitHub から新しいパッケージを取得しません。
+
+1. OpenCode で実行中の作業を終了し、初回導入に使ったパッケージマネージャーのコマンドを **1 つだけ** 実行します (GitHub の既定ブランチの最新版を取得)。
+
+```sh
+# uv
+uv tool install --force --upgrade git+https://github.com/jo7ueb/nepoforge.git
+# pipx (初回導入時の Git URL から再インストール)
+pipx reinstall nepoforge
+# pip (初回導入を --user で行った場合)
+python3 -m pip install --user --upgrade --force-reinstall git+https://github.com/jo7ueb/nepoforge.git
+```
+
+開発中はバージョン番号が同じままコードが更新されることがあるため、再インストールを含む手順にしています。リリースタグで固定する場合は、上記の Git URL の末尾に `@vX.Y.Z` (実在するタグ名) を付けて導入します。pipx で固定先を変更する場合は `pipx install --force git+https://github.com/jo7ueb/nepoforge.git@vX.Y.Z` を使います。タグ固定したままの更新では新しいタグを明示的に指定してください。
+
+2. 更新後のパッケージから、ユーザー単位のエージェント・コマンドと有効化済みプロジェクトの guardrail を同期します。
+
+```sh
+nepoforge --version
+nepoforge update --dry-run
+nepoforge update
+nepoforge status
+```
+
+既存のモデルプロファイルを引き継ぎます。プロジェクトごとの更新や `init` の再実行は不要です。改変・衝突が報告された場合は内容を確認してから対応し、安易に `--force` を指定しないでください。同期後に OpenCode を起動し直してください。
+
+### 状態確認・診断・削除
 
 ```sh
 nepoforge status          # 導入バージョン・管理対象・プロファイル・有効化済みプロジェクト
 nepoforge doctor          # opencode/git/gh・provider・認証の手がかり・衝突を診断 (読み取り専用・課金なし)
-nepoforge update          # 共通配布物を更新し、有効化済みプロジェクトにも一度で反映
 nepoforge uninstall       # 管理対象のみ撤去 (--projects でプロジェクト側も同時に)
 ```
 
