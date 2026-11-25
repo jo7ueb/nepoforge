@@ -139,6 +139,9 @@ def main() -> None:
             print(m)
         return
 
+    if (REPO_ROOT / "nepoforge" / "data").is_dir():
+        fail("source checkout uses the user-level CLI: nepoforge profile use <profile>")
+
     models = load_profile(args.profile)
     verify_models_exist(models)
 

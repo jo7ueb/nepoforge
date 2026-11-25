@@ -4,6 +4,7 @@
 エージェント定義・権限ガードレール・コマンド・プロファイル・スクリプトを、
 対象リポジトリの `.opencode/` と `profiles/`・`scripts/` 配下にコピーする。
 既存の OpenCode 環境 (~/.config/opencode) には一切書き込まない。
+旧方式との互換・移行用。新規導入は nepoforge init / enable を使用すること (#57)。
 
 使い方:
     nf_workbench.py install [--to DIR] [--dry-run]
@@ -57,6 +58,19 @@ MANAGED_FILES = (
     "scripts/nf_workbench.py",
 )
 
+def source_path(source: Path, rel: str) -> Path:
+    """配布正本を旧方式の導入先パスに対応づける。旧版の source にも対応する。"""
+    data = source / "nepoforge" / "data"
+    if data.is_dir():
+        if rel == ".opencode/opencode.jsonc":
+            return data / "templates" / "guardrail.jsonc"
+        if rel.startswith(".opencode/"):
+            return data / rel.removeprefix(".opencode/")
+        if rel.startswith("profiles/"):
+            return data / rel
+    return source / rel
+
+
 # .gitignore に管理ブロックとして追記する行 (対象リポジトリ側で必要な除外)。
 GITIGNORE_BLOCK_BEGIN = "# >>> nepoforge (managed) >>>"
 GITIGNORE_BLOCK_END = "# <<< nepoforge (managed) <<<"
@@ -99,6 +113,8 @@ def load_manifest(target: Path) -> dict | None:
         fail(f"manifest is broken: {path} ({exc})")
     if data.get("tool") != "nepoforge":
         fail(f"manifest belongs to another tool: {path}")
+    if data.get("kind") is not None:
+        fail(f"not a legacy manifest: {path}. use nepoforge disable for the current format")
     return data
 
 
@@ -228,7 +244,7 @@ def cmd_install(args: argparse.Namespace) -> int:
         raise SystemExit(2)
 
     if manifest is not None and all(kind == "unchanged" for kind in state.values()):
-        source_hashes = {rel: sha256_of(source / rel) for rel in MANAGED_FILES}
+        source_hashes = {rel: sha256_of(source_path(source, rel)) for rel in MANAGED_FILES}
         if all(source_hashes[rel] == manifest["files"].get(rel) for rel in MANAGED_FILES):
             print(f"already installed (version {manifest.get('version')}). nothing to do. use 'update' to refresh")
             return 0
@@ -242,7 +258,7 @@ def cmd_install(args: argparse.Namespace) -> int:
     for rel, kind in state.items():
         if kind == "missing":
             plan.append(("write", rel))
-        elif kind == "unchanged" and sha256_of(target / rel) != sha256_of(source / rel):
+        elif kind == "unchanged" and sha256_of(target / rel) != sha256_of(source_path(source, rel)):
             plan.append(("update", rel))
     if gitignore_new != gitignore_old:
         plan.append(("update", ".gitignore"))
@@ -257,13 +273,13 @@ def cmd_install(args: argparse.Namespace) -> int:
             if action == "update":
                 old = target / rel
                 print(f"--- diff: {rel}")
-                print(diff_text(old if old.is_file() else None, source / rel), end="")
+                print(diff_text(old if old.is_file() else None, source_path(source, rel)), end="")
         return 0
 
     for action, rel in plan:
         dest = target / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / rel, dest)
+        shutil.copy2(source_path(source, rel), dest)
     if gitignore_new != gitignore_old:
         write_gitignore(target, gitignore_new)
 
@@ -301,10 +317,10 @@ def cmd_update(args: argparse.Namespace) -> int:
     gitignore_new, gitignore_old = gitignore_plan(target)
     plan: list[tuple[str, str]] = []
     for rel in MANAGED_FILES:
-        src_hash = sha256_of(source / rel)
+        src_hash = sha256_of(source_path(source, rel))
         cur_hash = sha256_of(target / rel)
         if src_hash is None:
-            fail(f"source file is missing: {source / rel}")
+            fail(f"source file is missing: {source_path(source, rel)}")
         if src_hash != cur_hash:
             plan.append(("update" if cur_hash is not None else "write", rel))
     if gitignore_new != gitignore_old:
@@ -322,7 +338,7 @@ def cmd_update(args: argparse.Namespace) -> int:
             if action == "update":
                 old = target / rel
                 print(f"--- diff: {rel}")
-                print(diff_text(old if old.is_file() else None, source / rel), end="")
+                print(diff_text(old if old.is_file() else None, source_path(source, rel)), end="")
         return 0
 
     for action, rel in plan:
@@ -330,7 +346,7 @@ def cmd_update(args: argparse.Namespace) -> int:
             backup_file(target, rel)
         dest = target / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source / rel, dest)
+        shutil.copy2(source_path(source, rel), dest)
     if gitignore_new != gitignore_old:
         write_gitignore(target, gitignore_new)
 
@@ -357,15 +373,16 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     kept: list[str] = []
     removed: list[str] = []
     for rel, kind in state.items():
-        if kind == "missing":
+        if kind in ("missing", "conflict"):
             continue
         if kind == "modified" and not args.force:
             kept.append(rel)
             continue
-        if kind == "modified":
-            backup = backup_file(target, rel)
-            print(f"  [backup  ] {rel} -> {backup.relative_to(target)}")
-        (target / rel).unlink()
+        if not args.dry_run:
+            if kind == "modified":
+                backup = backup_file(target, rel)
+                print(f"  [backup  ] {rel} -> {backup.relative_to(target)}")
+            (target / rel).unlink()
         removed.append(rel)
     for rel in removed:
         print(f"  [removed ] {rel}")
@@ -421,7 +438,7 @@ def cmd_status(args: argparse.Namespace) -> int:
     print(f"installed: version {manifest.get('version')} at {manifest.get('installed_at')}")
     state = classify(target, manifest)
     report_state(state)
-    source_state = {rel: sha256_of(args.source / rel) for rel in MANAGED_FILES}
+    source_state = {rel: sha256_of(source_path(args.source, rel)) for rel in MANAGED_FILES}
     newer = [
         rel
         for rel in MANAGED_FILES
@@ -452,9 +469,10 @@ def main() -> int:
     args = parser.parse_args()
     if not args.source.is_dir():
         fail(f"source repository not found: {args.source}")
-    for rel in MANAGED_FILES:
-        if not (args.source / rel).is_file():
-            fail(f"source file is missing: {args.source / rel}")
+    if args.command != "uninstall":
+        for rel in MANAGED_FILES:
+            if not source_path(args.source, rel).is_file():
+                fail(f"source file is missing: {source_path(args.source, rel)}")
     return args.fn(args)
 
 
