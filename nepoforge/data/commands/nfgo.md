@@ -107,12 +107,13 @@ description: 指定した Issue を調査→設計→実装→独立レビュー
   3. 予算・時間の既定上限内である (未設定を無制限と解釈しない)。
   4. 同時 running 数が既定上限 (3) 内である。
 - **blocked**: 必須依存が失敗した後続タスクは起動しない。無関係なタスクは止めない。依存の再実行と受理後に起動判定へ戻す。依存を断念する場合は後続も取り消して報告する。
-- **再試行上限**: 実行失敗 (error・受理拒否) の自動再委譲は同一 task_id につき 1 回。超過時は primary が逐次実施するか停止して報告する。
+- **再試行上限**: 実行失敗 (error・受理拒否) の自動再委譲は同一 task_id につき 1 回。超過時は primary が逐次実施するか停止して報告する。逐次実施に切り替えた場合も、その旨と結果をステップ 4 の報告に含める。
+- **委譲しない作業**: 標準ツール (テスト実行・検索・集計など) で決定的に達成でき、判断を要しない作業は委譲せず primary が遂行する。
 
 ### 子の報告の扱い (TaskResult)
 
 - 子の報告は idle ごとに届く。`state="running"` は中間報告であり、完了とみなさない。`state="completed"` / `error` を確認して次に進む。
-- `state="completed"` の報告は TaskResult 慣約で受け取る: status (succeeded / failed / blocked)・summary・根拠 (パス・差分・sessionID)・acceptance_results (完了条件ごとの判定)。actual_model は把握できない場合「unknown」と明記させる。
+- `state="completed"` の報告は TaskResult 慣約で受け取る: status (succeeded / failed / blocked。cancelled は primary 側の取消で発生する)・summary・根拠 (パス・差分・sessionID)・acceptance_results (完了条件ごとの判定)。actual_model は把握できない場合「unknown」と明記させる。
 - primary は acceptance_criteria と acceptance_results を照合して受理する。受理されるまで後続の必須依存は満たした扱いにしない。受理できない場合は再委譲 (再試行上限内)・逐次実施・停止報告を判断する。
 - 子が `error` で終了しても、依存しない他の作業は止めない。失敗したタスクについてのみ再委譲・逐次実施・停止報告を判断する。
 - 並列委譲を行った場合は、その旨をステップ 4 の報告に含める。
