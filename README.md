@@ -108,7 +108,7 @@ nepoforge profile show            # 現行プロファイルの役割→モデ�
 
 個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。プロジェクト固有の上書きは、そのリポジトリの設定で `agents.<id>.model` を定義します (プロジェクト設定がグローバル定義に上書きマージされるため)。
 
-本リポジトリ自体で開発する場合の従来方式 (`python3 scripts/switch_profile.py`) もそのまま使えます。
+`scripts/switch_profile.py` は旧方式で導入したリポジトリ向けの互換スクリプトです。本リポジトリでは `nepoforge profile use` を使用します。
 
 ## ドキュメント
 
@@ -124,13 +124,13 @@ nepoforge profile show            # 現行プロファイルの役割→モデ�
 
 ```
 .
-├── .opencode/       # OpenCode 設定 (本リポジトリの開発環境。配布物の正本は nepoforge/data/)
-│   ├── agents/      # エージェント定義 (architect / expert / explore / implementer / reviewer)
-│   ├── commands/    # /nfgo コマンド (#8)
-│   └── opencode.jsonc  # リポジトリ共通の権限ガードレール
-├── nepoforge/       # 配布パッケージ (#47): CLI と同梱配布物 (data/)
-├── profiles/        # モデルプロファイル (本リポジトリ開発用。配布物は nepoforge/data/profiles/)
-├── scripts/         # switch_profile.py (プロファイル適用 #6)、nf_workbench.py (旧・リポジトリ単位導入 #9)
+├── nepoforge/       # 配布パッケージ (#47): CLI と設定の唯一の正本
+│   └── data/
+│       ├── agents/   # エージェント定義
+│       ├── commands/ # /nfgo 等のコマンド
+│       ├── profiles/ # モデルプロファイル
+│       └── templates/ # guardrail / provider
+├── scripts/         # 旧リポジトリ単位導入・プロファイル切替の互換用
 ├── tests/           # 単体・統合テスト (API 課金なし)
 ├── pyproject.toml   # パッケージ定義 (#47)
 ├── README.md
@@ -144,7 +144,51 @@ nepoforge profile show            # 現行プロファイルの役割→モデ�
     └── investigate/ # 調査報告
 ```
 
-`workflows/`(ワークフロー定義の分離)は MVP 後の Phase 2 以降で検討します。現行は OpenCode 標準の `.opencode/commands/` を使用します。
+`workflows/`(ワークフロー定義の分離)は MVP 後の Phase 2 以降で検討します。現行は OpenCode 標準のコマンド定義を `nepoforge/data/commands/` に保持します。
+
+## Nepoforge 自身の開発環境
+
+本リポジトリも一般の利用先と同様に、インストール済みの Nepoforge を使います。
+
+```sh
+nepoforge init           # 初回のみ
+nepoforge enable         # clone ごとに guardrail を有効化
+nepoforge doctor
+```
+
+OpenCode は enable 成功後に起動します。`.opencode/` はローカル生成物であり、Git 管理しません。エージェント・コマンド・プロファイル・guardrail の変更は `nepoforge/data/` に対して行います。
+
+### 既存 clone の移行 (#57)
+
+OpenCode を終了してから、`git status` で未コミットの変更を確認し、必要な変更をコミットまたは別の場所へ退避します。旧版で個別に追加した `.opencode/` 内の定義や `profiles/local.json` も必要に応じて保存してください。更新を取り込むと Git 追跡済みの旧設定は削除されます。ローカルに残った同名エージェント・コマンドはグローバル版より優先されるため確認し、使用しない旧定義は退避します。
+
+`nepoforge update` でインストール済みパッケージの設定を同期し、`nepoforge enable` と `nepoforge doctor` を実行してから OpenCode を再開します。管理外の設定との衝突が残る場合は、内容を確認して手動で退避・統合し、無条件の削除・上書きはしません。旧方式の管理マニフェストがある場合は [移行手順](docs/design/0003-package-cli.md) に従います。
+
+### 開発中の配布物を検証する
+
+通常の開発セッションを壊さないよう、別のシェル・一時 XDG 環境・テスト用 Git リポジトリでソース版を検証します。既存の OpenCode 設定・認証を使わず、API を呼び出さない確認例です。
+
+```sh
+# ソース checkout のルートで実行する
+repo="$PWD"
+scratch=$(mktemp -d)
+(
+  export XDG_CONFIG_HOME="$scratch/config"
+  export XDG_STATE_HOME="$scratch/state"
+  python3 -m venv "$scratch/venv"
+  "$scratch/venv/bin/python" -m pip install -e "$repo"
+  "$scratch/venv/bin/python" -m nepoforge init
+  mkdir "$scratch/project"
+  git -C "$scratch/project" init -q
+  cd "$scratch/project"
+  "$scratch/venv/bin/python" -m nepoforge enable
+  "$scratch/venv/bin/python" -m nepoforge status
+  "$scratch/venv/bin/python" -m nepoforge disable
+  "$scratch/venv/bin/python" -m nepoforge uninstall
+)
+```
+
+テストの一時ディレクトリは確認後に削除してください。依存パッケージのインストールにはネットワークが必要な場合があります。課金なしの単体・統合テストは `python3 -m unittest discover -s tests -t .` で実行します。
 
 ## 開発手順 (AI エージェント向け)
 
