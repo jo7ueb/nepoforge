@@ -506,6 +506,24 @@ class TestDoctorFastmetalAuth(IsolatedEnv):
             state, _ = cli._fastmetal_auth_status()
         self.assertEqual(state, "unknown")
 
+    def test_similar_id_is_not_fastmetal(self) -> None:
+        # 部分一致や近似名 (fastmetal-plus 等) を登録済みと誤判定しないこと
+        item = self._doctor_json(("ok", '[{"id": "fastmetal-plus", "name": "FastMetal Plus"}]'))
+        self.assertFalse(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list",
+            return_value=("ok", '[{"id": "fastmetal-plus", "name": "FastMetal Plus"}]'),
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "missing")
+
+    def test_uppercase_id_matches(self) -> None:
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", '[{"id": "FastMetal"}]')
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "stored")
+
     def test_non_dict_element_is_unknown(self) -> None:
         item = self._doctor_json(("ok", '["fastmetal"]'))
         self.assertTrue(item["ok"])
@@ -572,6 +590,18 @@ class TestDoctorFastmetalAuth(IsolatedEnv):
         self.assertEqual(result[0], "error")
         self.assertIn("spawn failed", result[1])
 
+    def test_runner_rc_nonzero_ignores_stdout(self) -> None:
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="SECRET_IN_STDOUT", stderr=""
+        )
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch("nepoforge.cli.subprocess.run", return_value=completed):
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result, ("failed", "rc=1"))
+        self.assertNotIn("SECRET_IN_STDOUT", result[1])
+
     def test_no_secret_values_in_output(self) -> None:
         import contextlib
         import io
@@ -588,6 +618,26 @@ class TestDoctorFastmetalAuth(IsolatedEnv):
         out = stdout.getvalue()
         self.assertNotIn("nf-test-dummy-key", out)
         self.assertNotIn("cred_DO_NOT_LEAK", out)
+
+    def test_failure_detail_is_truncated_to_one_line(self) -> None:
+        import contextlib
+        import io
+
+        # 失敗理由の stderr (複数行・長大行) が 1 行・200 文字に切り詰められ、
+        # 2 行目以降が doctor 出力に現れないこと。
+        long_line = "x" * 1000
+        stderr = f"{long_line}\ncred_DO_NOT_LEAK"
+        os.environ.pop("FASTMETAL_API_KEY", None)
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("failed", cli._one_line(stderr))
+        ):
+            with contextlib.redirect_stdout(stdout):
+                cli.main(["doctor", "--json"])
+        out = stdout.getvalue()
+        self.assertNotIn("cred_DO_NOT_LEAK", out)
+        self.assertNotIn("x" * 201, out)
+        self.assertIn("x" * 200, out)
 
 
 class TestCanonicalData(IsolatedEnv):

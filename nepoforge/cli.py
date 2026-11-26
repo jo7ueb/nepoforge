@@ -461,7 +461,8 @@ def _run_opencode_auth_list() -> tuple[str, str]:
     except OSError as exc:
         return ("error", _one_line(exc))
     if result.returncode != 0:
-        reason = (result.stderr or result.stdout or "").strip().splitlines()
+        # stdout には触れない (rc 異常時の出力に想定外の内容が混じる場合の露出面を狭める)。
+        reason = (result.stderr or "").strip().splitlines()
         return ("failed", _one_line(reason[0]) if reason else f"rc={result.returncode}")
     return ("ok", result.stdout or "")
 
