@@ -46,7 +46,7 @@ class TestRuntimeIncidentFixture(unittest.TestCase):
                     reasoning_tokens=int(row["reasoning"] or 0),
                     cache_read_tokens=int(row["cache_read"] or 0),
                     cache_write_tokens=int(row["cache_write"] or 0),
-                    reported_cost_yen=Decimal(row["cost_recorded"] or 0),
+                    reported_cost=Decimal(row["cost_recorded"] or 0),
                     estimated_cost_yen=message_cost,
                 )],
             )

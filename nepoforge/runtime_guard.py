@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from decimal import Decimal
-from typing import Protocol
+from typing import Any, Protocol
 
 from . import budget
 
@@ -32,10 +32,9 @@ class MessageUsage:
     reasoning_tokens: int = 0
     cache_read_tokens: int = 0
     cache_write_tokens: int = 0
-    # API cost は記録値として残すが、0を無料とせず単価表で見積もり直す。
-    reported_cost_yen: Decimal | None = None
+    # Provider側の記録値は通貨/条件が異なるため、円換算と混同しない。
+    reported_cost: Decimal | None = None
     estimated_cost_yen: Decimal | None = None
-    cache_write_priced: bool = False
 
 
 @dataclass
@@ -163,20 +162,22 @@ class RuntimeGuard:
 
             # cost=0/None is not proof of free usage. Re-price known token usage
             # using the established (dated) table; unknown model/cost fails closed.
+            rates = budget.price_for(raw.model)
+            if rates is None:
+                self._latch(f"unknown price for model: {raw.model}")
+                return
+            if budget.expired_price(raw.model):
+                self._latch(f"expired price for model: {raw.model}")
+                return
+            if raw.cache_write_tokens:
+                self._latch("cache-write price unknown")
+                return
             estimated = raw.estimated_cost_yen
             if estimated is None:
-                rates = budget.price_for(raw.model)
-                if rates is None:
-                    self._latch(f"unknown price for model: {raw.model}")
-                    return
                 input_rate, output_rate = (Decimal(str(rate)) for rate in rates)
-                if raw.cache_write_tokens and not raw.cache_write_priced:
-                    self._latch("cache-write price unknown")
-                    return
                 estimated = (
                     Decimal(raw.input_tokens + raw.cache_read_tokens) * input_rate
                     + Decimal(raw.output_tokens + raw.reasoning_tokens) * output_rate
-                    + Decimal(raw.cache_write_tokens) * input_rate
                 ) / Decimal(1_000_000)
             if estimated < 0:
                 self._latch("negative estimated cost")
@@ -235,6 +236,15 @@ class RuntimeGuard:
         """イベント/API収集が切断した場合の停止通知。"""
         self._latch(reason)
 
+    def observe_api_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
+        """OpenCode message API response (`data[]`) を本文なしで取り込み、欠損時は停止。"""
+        try:
+            normalized = [message_usage_from_api(session_id, item) for item in messages]
+        except (KeyError, TypeError, ValueError):
+            self._latch("incomplete or invalid OpenCode usage observation")
+            return
+        self.update_usage(session_id, normalized)
+
     def can_launch(self, estimate_yen: Decimal | None = None) -> tuple[bool, str]:
         """新規送信/retry直前に上限・現時点の予約・次要求見積りを検査。"""
         if self.is_latched:
@@ -260,3 +270,32 @@ class RuntimeGuard:
         if self.dispatcher is not None:
             for session_id in sorted(self._active_sessions):
                 self.dispatcher.interrupt_session(session_id)
+
+
+def message_usage_from_api(session_id: str, message: dict[str, Any]) -> MessageUsage:
+    """OpenCode v2 message recordをusageに正規化。本文やpartsは保持しない。"""
+    info = message.get("info", message)
+    model = info["model"]
+    tokens = info["tokens"]
+    cache = tokens.get("cache") or {}
+    when = info.get("time") or {}
+    created_ms = when.get("created", info.get("created_ms"))
+    if type(created_ms) is not int:
+        raise ValueError("missing message timestamp")
+    model_id = f"{model['providerID']}/{model['id']}"
+    if model.get("variant"):
+        model_id += f"#{model['variant']}"
+    return MessageUsage(
+        id=info["id"],
+        session_id=session_id,
+        model=model_id,
+        created_ms=created_ms,
+        input_tokens=tokens["input"],
+        output_tokens=tokens["output"],
+        reasoning_tokens=tokens.get("reasoning", 0),
+        cache_read_tokens=cache.get("read", 0),
+        cache_write_tokens=cache.get("write", 0),
+        reported_cost=(
+            Decimal(str(info["cost"])) if info.get("cost") is not None else None
+        ),
+    )

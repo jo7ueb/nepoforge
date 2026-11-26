@@ -15,7 +15,7 @@ class MockDispatcher:
 def message(message_id="m1", session_id="s1", **kwargs):
     values = dict(
         id=message_id, session_id=session_id, model="fastmetal/gemma-4-26b-a4b-it",
-        created_ms=100, input_tokens=1000, output_tokens=100, reported_cost_yen=Decimal(0),
+        created_ms=100, input_tokens=1000, output_tokens=100, reported_cost=Decimal(0),
     )
     values.update(kwargs)
     return MessageUsage(**values)
@@ -47,6 +47,25 @@ class TestRuntimeGuard(unittest.TestCase):
         guard.update_usage("s1", [message(model="fastmetal/not-priced")])
         self.assertTrue(guard.is_latched)
         self.assertIn("unknown price", guard.latch_reason)
+
+    def test_api_record_normalizes_without_content_and_missing_fields_latch(self):
+        guard = RuntimeGuard(Decimal("10"))
+        guard.observe_api_messages("s1", [{
+            "id": "api-message",
+            "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it"},
+            "time": {"created": 101},
+            "tokens": {"input": 100, "output": 10, "reasoning": 1,
+                       "cache": {"read": 2, "write": 0}},
+            "cost": 0,
+            "content": "must not be retained",
+        }])
+        snapshot = guard.snapshots["s1"]
+        self.assertEqual(snapshot.input_tokens, 100)
+        self.assertFalse(hasattr(snapshot, "content"))
+
+        lost = RuntimeGuard(Decimal("10"))
+        lost.observe_api_messages("s2", [{"id": "missing-token-fields"}])
+        self.assertTrue(lost.is_latched)
 
     def test_unknown_budget_and_request_estimate_fail_closed(self):
         self.assertFalse(RuntimeGuard(None).can_launch(Decimal("0"))[0])
