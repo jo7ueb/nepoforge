@@ -96,6 +96,7 @@ nepoforge status
 
 ```sh
 nepoforge status          # 導入バージョン・管理対象・プロファイル・有効化済みプロジェクト
+nepoforge validate        # 同梱データ (エージェント・プロファイル・テンプレート) の整合性を検証 (課金なし)
 nepoforge doctor          # opencode/git/gh・provider・認証の手がかり・衝突を診断 (読み取り専用・課金なし)
 nepoforge uninstall       # 管理対象のみ撤去 (--projects でプロジェクト側も同時に)
 ```
@@ -185,6 +186,7 @@ nepoforge profile derive          # 派生定義 (agents/nf-<role>-<slug>.md) �
 │       └── templates/ # guardrail / provider
 ├── scripts/         # 旧リポジトリ単位導入・プロファイル切替の互換用
 ├── tests/           # 単体・統合テスト (API 課金なし)
+├── .github/workflows/ci.yml  # 全体回帰の CI (#11)。秘密情報・API 課金なし
 ├── pyproject.toml   # パッケージ定義 (#47)
 ├── README.md
 ├── ROADMAP.md
@@ -241,7 +243,23 @@ scratch=$(mktemp -d)
 )
 ```
 
-テストの一時ディレクトリは確認後に削除してください。依存パッケージのインストールにはネットワークが必要な場合があります。課金なしの単体・統合テストは `python3 -m unittest discover -s tests -t .` で実行します。
+- テストの一時ディレクトリは確認後に削除してください。依存パッケージのインストールにはネットワークが必要な場合があります。課金なしの単体・統合テストは `python3 -m unittest discover -s tests -t .` で実行します。全体の回帰は GitHub Actions が行うため、個々のエージェントは担当範囲の最小限の試験に留めます ([検証の責務分離](AGENTS.md))。
+
+### CI と設定の検証 (#11)
+
+PR を作ると GitHub Actions (`.github/workflows/ci.yml`) が自動で実行されます。draft PR でも起動し、同じ PR の古い実行は取り消して最新差分を優先します。API や有料モデルは使わず、秘密情報も必要としません。
+
+- `test` ジョブ: Python 3.11 と最新の 2 版で、`python -m nepoforge validate` と全テストを実行します。
+- `package` ジョブ: wheel と sdist をビルドし、wheel を隔離環境へ導入して `init` / `status` / `uninstall` が動くこと、配布データが同梱されていることを確認します。
+
+導入済み環境では、同梱データの整合性をいつでも確認できます:
+
+```sh
+nepoforge validate          # 問題があれば内容を表示し、終了コード 1
+nepoforge validate --json   # CI 向けの JSON 出力
+```
+
+`validate` はエージェント定義 (frontmatter・モデル表記・権限ルール)、コマンド定義、プロファイル (候補・タスク規則・制約)、役割の参照、モデルルート、guardrail/provider テンプレートを検査します。CI の成功は最新 head SHA のチェックで確認してください。マージ前に required status check として使う場合は、リポジトリのブランチ保護・Ruleset にチェック名 `test` と `package` を追加します。**実際のブランチ保護・Ruleset の変更はリポジトリ管理者 (人間) が明示承認のうえで行います**。マージは従来どおり人間だけが行います。
 
 ## 開発手順 (AI エージェント向け)
 
