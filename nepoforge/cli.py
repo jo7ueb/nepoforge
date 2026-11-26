@@ -35,6 +35,8 @@ PROVIDER_TEMPLATE = store.TEMPLATE_DIR / "provider-fastmetal.jsonc"
 LEGACY_FASTMETAL_BLOCK_HASHES = {
     "0fe7fa135597ecec69049be1e46b47f64eb4a4d96c40de25b255022eea9263ef",
     "e856da90fe0b0dc385771df461437df6c39bb54cfaba2bfbb42d0f7d3a256d25",
+    "a4923a7050fb1902cf5a2c949ff7f4d695de2d1136ab9d4a7496f65aa0975906",
+    "e7ca28ea2dc74f16681cbea5008cdae45dee55ee69b6e56247e727f640cb2e5f",
 }
 
 
@@ -966,10 +968,11 @@ def cmd_profile(args: argparse.Namespace) -> int:
         observed = profiles.parse_model(args.model)
         policy = data_policy.effective(data_policy.load_project_policy(), args.data_policy)
         if args.profile_command == "check-primary":
-            if config.primary_model is None:
+            recommended = config.primary_for(policy)
+            if recommended is None:
                 fail(f"profile '{name}' has no Primary recommendation")
-            if observed != config.primary_model:
-                fail(f"Primary model mismatch: selected {observed}, recommended {config.primary_model}")
+            if observed != recommended:
+                fail(f"Primary model mismatch: selected {observed}, recommended {recommended}")
         endpoint = resolver.approved_endpoint(config, observed)
         if not endpoint or endpoint.rstrip("/") != args.endpoint.rstrip("/") or args.upstream_model != observed.model:
             fail(f"unapproved execution route for model: {observed}")
@@ -1003,6 +1006,8 @@ def cmd_profile(args: argparse.Namespace) -> int:
             print(f"  max_parallel: {cfg.constraints.max_parallel}")
             print(f"  task_rules:   {len(cfg.task_rules)}")
             print(f"  primary_model (recommended): {cfg.primary_model or '(unset)'}")
+            for policy, model in cfg.primary_model_by_policy.items():
+                print(f"  primary_model ({policy}): {model}")
         except NepoforgeError:
             pass
         return 0

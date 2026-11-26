@@ -42,6 +42,8 @@ PRICES: dict[str, tuple[float, float]] = {
     "fastmetal/gemma-4-26b-a4b-it": (11.76, 57.12),
     "fastmetal/gpt-oss-20b": (5.04, 23.52),
     "fastmetal/gpt-oss-120b": (16.0, 79.0),
+    "fastmetal/llama-3.2-3b-instruct": (9.096, 59.87),
+    "fastmetal/glm-4.7-flash": (10.811, 71.48),
     "fastmetal/japan-qwen3-swallow-8b": (5.5, 27.0),
     "fastmetal/japan-deepseek-v4.1-flash-1017-validation": (33.6, 134.4),
     "fastmetal/llama-3.1-8b-instruct": (3.36, 6.72),

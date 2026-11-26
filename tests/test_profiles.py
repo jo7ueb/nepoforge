@@ -164,7 +164,7 @@ class TestLoadProfileConfig(IsolatedEnv):
                     self.assertTrue(candidate.verified_on)
                     provider_model = models[candidate.ref.model]
                     self.assertEqual(provider_model["limit"]["context"], candidate.context_tokens)
-                    self.assertTrue(provider_model["capabilities"]["tools"])
+                    self.assertEqual(provider_model["capabilities"]["tools"], "tool_calling" in candidate.capabilities)
                     self.assertEqual(provider_model["compatibility"]["maxTokensField"], "max_tokens")
                     reasoning = provider_model.get("body", {}).get("reasoning")
                     self.assertEqual(reasoning, {

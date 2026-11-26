@@ -28,6 +28,19 @@
           "glm-5.3-flashx": { "name": "GLM 5.3 FlashX" },
           "devstral-2512": { "name": "Devstral 2512" },
           // Low cost / Subagents
+          "llama-3.2-3b-instruct": {
+            "name": "Llama 3.2 3B Instruct",
+            "capabilities": { "tools": false },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 131072, "output": 2048 }
+          },
+          "glm-4.7-flash": {
+            "name": "GLM 4.7 Flash",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 202752, "output": 12000 },
+            "body": { "reasoning": { "enabled": false } }
+          },
           "gpt-oss-20b": {
             "name": "GPT OSS 20B",
             "capabilities": { "tools": true },

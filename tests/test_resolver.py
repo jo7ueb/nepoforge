@@ -234,7 +234,7 @@ class TestResolve(unittest.TestCase):
                 ("reviewer", {"capabilities": ("structured_output",)}, None, None),
                 ("reviewer", {"domestic_only": True}, None, None),
                 ("architect", {"responsibility": "integration", "domestic_only": True}, integration, 32000),
-                ("architect", {"responsibility": "integration", "data_policy": "confidential", "domestic_only": True}, strict, 32000),
+                ("architect", {"responsibility": "integration", "data_policy": "confidential", "domestic_only": True}, deepseek, 32000),
                 ("explore", {"context_tokens": 262145}, None, None),
             ]
             for role, options, model, output in cases:

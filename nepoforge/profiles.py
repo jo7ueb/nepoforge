@@ -251,6 +251,10 @@ class ProfileConfig:
     task_rules: tuple[TaskRule, ...] = field(default_factory=tuple)
     constraints: Constraints = field(default_factory=Constraints)
     primary_model: ModelRef | None = None
+    primary_model_by_policy: dict[str, ModelRef] = field(default_factory=dict)
+
+    def primary_for(self, policy: str) -> ModelRef | None:
+        return self.primary_model_by_policy.get(policy, self.primary_model)
 
 
 def load_profile_config(name: str) -> ProfileConfig:
@@ -494,6 +498,16 @@ def load_profile_config(name: str) -> ProfileConfig:
     primary_model = parse_model(primary) if primary is not None else None
     if primary_model is not None and format_model(primary_model) not in candidate_model_strs:
         raise NepoforgeError(f"'primary_model' must be in candidates: {path}")
+    policy_models = data.get("primary_model_by_policy", {})
+    if not isinstance(policy_models, dict):
+        raise NepoforgeError(f"'primary_model_by_policy' must be an object: {path}")
+    primary_model_by_policy = {}
+    for key, value in policy_models.items():
+        policy = data_policy.validate(key)
+        ref = parse_model(value)
+        if format_model(ref) not in candidate_model_strs:
+            raise NepoforgeError(f"'primary_model_by_policy' model must be in candidates: {path}")
+        primary_model_by_policy[policy] = ref
 
     return ProfileConfig(
         name=data.get("name", name) if isinstance(data.get("name"), str) else name,
@@ -502,4 +516,5 @@ def load_profile_config(name: str) -> ProfileConfig:
         task_rules=tuple(rules),
         constraints=constraints,
         primary_model=primary_model,
+        primary_model_by_policy=primary_model_by_policy,
     )

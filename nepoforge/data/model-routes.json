@@ -1,4 +1,12 @@
 {
+  "fastmetal/llama-3.2-3b-instruct": {
+    "no_training": true, "retention": "zero", "destination": null,
+    "approval_ref": "https://fastmetal.jp/models/meta-llama/llama-3-2-3b-instruct", "verified_on": "2026-11-26"
+  },
+  "fastmetal/glm-4.7-flash": {
+    "no_training": true, "retention": "zero", "destination": "global",
+    "approval_ref": "https://fastmetal.jp/models/z-ai/glm-4-7-flash", "verified_on": "2026-11-26"
+  },
   "fastmetal/gpt-oss-20b": {
     "no_training": true, "retention": null, "destination": "global",
     "approval_ref": "https://fastmetal.jp/models/openai/gpt-oss-20b", "verified_on": "2026-11-26"

@@ -88,7 +88,7 @@ class TestProjectPolicy(IsolatedEnv):
         path = self.home / "plan.json"
         tasks = [
             {"task_id": "T1", "role": "reviewer", "data_policy": "open"},
-            {"task_id": "T2", "role": "explore"},
+            {"task_id": "T2", "role": "explore", "domestic_only": True},
             {"task_id": "T3", "role": "explore", "executor": "tool"},
         ]
         path.write_text(json.dumps({"tasks": tasks}), encoding="utf-8")
@@ -111,7 +111,8 @@ class TestProjectPolicy(IsolatedEnv):
         deepseek = "japan-deepseek-v4.1-flash-1017"
         base = "https://api.fastmetal.ai/v1"
         cases = [
-            ("check-primary", "economy", glm, base, glm, "not eligible"),
+            ("check-primary", "economy", glm, base, glm, "mismatch"),
+            ("check-primary", "economy", deepseek, base, deepseek, None),
             ("check-primary", "balanced", deepseek, base, deepseek, None),
             ("check-primary", "balanced", deepseek, "https://proxy.invalid/v1", deepseek, "unapproved"),
             ("check-route", "balanced", deepseek, base, "auto", "unapproved"),
@@ -131,3 +132,29 @@ class TestProjectPolicy(IsolatedEnv):
                     else:
                         with redirect_stdout(io.StringIO()):
                             self.assertEqual(cli.main(args), 0)
+
+    def test_confidential_leaf_routes_start_within_budget_in_every_profile(self) -> None:
+        tasks = [
+            {"task_id": "T1", "role": "implementer", "write_scope": ["main.py"],
+             "capabilities": ["code", "tool_calling"]},
+            {"task_id": "T2", "role": "explore", "task_kind": "extraction",
+             "complexity": "low", "risk": "low"},
+            {"task_id": "T3", "role": "explore", "task_kind": "extraction",
+             "complexity": "low", "risk": "low", "capabilities": ["tool_calling"]},
+        ]
+        path = self.home / "plan.json"
+        path.write_text(json.dumps({"tasks": tasks}), encoding="utf-8")
+        for name in ("economy", "balanced", "performance"):
+            with self.subTest(profile=name), redirect_stdout(io.StringIO()) as output:
+                self.assertEqual(cli.main(["init", "--profile", name]), 0)
+                output.seek(0)
+                output.truncate(0)
+                self.assertEqual(cli.main(["plan", "ready", str(path), "--limit-yen", "20", "--json"]), 0)
+                result = json.loads(output.getvalue())
+                self.assertEqual(result["launch"], ["T1", "T2", "T3"])
+                self.assertEqual(result["resolved"], {
+                    "T1": "fastmetal/glm-4.7-flash",
+                    "T2": "fastmetal/llama-3.2-3b-instruct",
+                    "T3": "fastmetal/glm-4.7-flash",
+                })
+                self.assertEqual(result["model_resolutions"]["T3"]["max_output_tokens"], 2048)

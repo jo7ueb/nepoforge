@@ -10,6 +10,8 @@
     "reviewer": "fastmetal/gemma-4-26b-a4b-it"
   },
   "candidates": [
+    {"model": "fastmetal/llama-3.2-3b-instruct", "capabilities": [], "context_tokens": 131072, "reasoning": "provider_default"},
+    {"model": "fastmetal/glm-4.7-flash", "capabilities": ["code", "tool_calling"], "context_tokens": 202752, "reasoning": "off"},
     {"model": "fastmetal/gpt-oss-20b", "capabilities": ["tool_calling"], "context_tokens": 131072, "reasoning": "low"},
     {"model": "fastmetal/gpt-oss-120b", "capabilities": ["tool_calling"], "context_tokens": 131072, "reasoning": "provider_default"},
     {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling"], "context_tokens": 262144, "reasoning": "off"},
@@ -23,6 +25,9 @@
     {"when": {"responsibility": "integration"}, "model": "fastmetal/japan-glm-5.3-flash", "max_output_tokens": 32000},
     {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low"}, "model": "fastmetal/gpt-oss-20b", "max_output_tokens": 2048},
     {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low"}, "model": "fastmetal/gemma-4-26b-a4b-it", "max_output_tokens": 2048},
+    {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low", "data_policy": "confidential"}, "model": "fastmetal/llama-3.2-3b-instruct", "max_output_tokens": 2048},
+    {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low", "data_policy": "confidential"}, "model": "fastmetal/glm-4.7-flash", "max_output_tokens": 2048},
+    {"when": {"responsibility": "leaf", "data_policy": "confidential"}, "model": "fastmetal/glm-4.7-flash", "max_output_tokens": 12000},
     {"when": {"responsibility": "leaf"}, "model": "fastmetal/gemma-4-26b-a4b-it", "max_output_tokens": 12000}
   ]
 }
