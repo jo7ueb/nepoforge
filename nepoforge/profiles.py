@@ -247,35 +247,6 @@ class ProfileConfig:
     constraints: Constraints = field(default_factory=Constraints)
 
 
-def _default_candidate_models(name: str) -> set[str]:
-    models: set[str] = set()
-    for p in profile_dir().glob("*.json"):
-        try:
-            data = _json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        roles = data.get("roles")
-        if isinstance(roles, dict):
-            for m in roles.values():
-                if isinstance(m, str):
-                    models.add(m)
-    lp = store.local_profile_path()
-    if lp.is_file():
-        try:
-            data = _json.loads(lp.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                roles = data.get("roles")
-                if isinstance(roles, dict):
-                    for m in roles.values():
-                        if isinstance(m, str):
-                            models.add(m)
-        except (OSError, ValueError):
-            pass
-    return models
-
-
 def load_profile_config(name: str) -> ProfileConfig:
     """プロファイルを読み込み、optional キー (candidates/task_rules/constraints) を検証する。"""
     _check_profile_name(name)
@@ -330,8 +301,8 @@ def load_profile_config(name: str) -> ProfileConfig:
         raw_providers = [
             {
                 "id": "fastmetal",
-                "destination": "FastMetal 国内ホスト",
-                "retention": "学習利用なし",
+                "destination": "FastMetal API (ホスト条件はモデル別)",
+                "retention": "モデル別に確認",
                 "approved": True,
                 "approval_ref": "0001 §3 / #52 PR",
             }
@@ -397,18 +368,10 @@ def load_profile_config(name: str) -> ProfileConfig:
     candidate_model_strs: set[str] = set()
 
     if raw_candidates is None:
-        for ms in _default_candidate_models(name):
-            try:
-                ref = parse_model(ms)
-            except NepoforgeError:
-                continue
-            fm = format_model(ref)
-            if fm in candidate_model_strs:
-                continue
-            candidate_model_strs.add(fm)
-            candidates.append(
-                Candidate(ref=ref, capabilities=None, context_tokens=None, destination=None, retention=None, approval_ref=None)
-            )
+        # roles のみの旧プロファイルは、選択中の roles を候補とする。
+        refs = dict.fromkeys(parse_model(model) for model in roles.values())
+        candidates = [Candidate(ref=ref) for ref in refs]
+        candidate_model_strs = {format_model(ref) for ref in refs}
     else:
         for c in raw_candidates:
             if not isinstance(c, dict):
@@ -440,16 +403,6 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"candidate 'approval_ref' must be a string: {path}")
             candidates.append(
                 Candidate(ref=ref, capabilities=caps, context_tokens=ct, destination=dest, retention=ret, approval_ref=ar)
-            )
-
-    # roles の値を候補に union
-    for role, model in roles.items():
-        ref = parse_model(model)
-        fm = format_model(ref)
-        if fm not in candidate_model_strs:
-            candidate_model_strs.add(fm)
-            candidates.append(
-                Candidate(ref=ref, capabilities=None, context_tokens=None, destination=None, retention=None, approval_ref=None)
             )
 
     # provider 承認チェック

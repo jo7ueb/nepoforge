@@ -53,60 +53,45 @@ class TestDeriveBasics(unittest.TestCase):
 
 class TestDerivePlan(IsolatedEnv):
     def test_plan_write_then_ok(self) -> None:
-        # isolated env: init first
-        self.assertEqual(cli.main(["init"]), 0)
         cfg = profiles.load_profile_config("balanced")
-        # balanced has no task_rules → plan empty
         plan = derive.derive_plan(cfg, target_dir=store.opencode_dir())
-        self.assertEqual(plan, [])
-        # with explicit pair differing from default
-        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/kimi-k3.1-pro", target_dir=store.opencode_dir())
-        self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0].state, "write")
-        # apply
-        cli.main  # noop
-        # write manually
-        (store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")).parent.mkdir(parents=True, exist_ok=True)
-        (store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")).write_text(plan[0].expected_text, encoding="utf-8")
-        plan2 = derive.derive_plan(cfg, role="implementer", model="fastmetal/kimi-k3.1-pro", target_dir=store.opencode_dir())
-        self.assertEqual(plan2[0].state, "ok")
+        self.assertTrue(plan)
+        self.assertEqual({item.state for item in plan}, {"write"})
+        self.assertEqual(cli.main(["init"]), 0)
+        self.assertEqual({item.state for item in derive.derive_plan(cfg)}, {"ok"})
 
     def test_conflict_detection(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         cfg = profiles.load_profile_config("balanced")
-        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/kimi-k3.1-pro", target_dir=store.opencode_dir())
+        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
         target = store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("different content\n", encoding="utf-8")
-        plan2 = derive.derive_plan(cfg, role="implementer", model="fastmetal/kimi-k3.1-pro", target_dir=store.opencode_dir())
+        plan2 = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
         self.assertEqual(plan2[0].state, "conflict")
 
 
 class TestDeriveCLI(IsolatedEnv):
     def test_derive_dry_run_no_write(self) -> None:
-        self.assertEqual(cli.main(["init"]), 0)
-        before = set((store.opencode_dir() / "agents").iterdir()) if (store.opencode_dir() / "agents").is_dir() else set()
-        rc = cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro", "--dry-run"])
-        self.assertEqual(rc, 0)
-        after = set((store.opencode_dir() / "agents").iterdir())
-        self.assertEqual(before, after)
+        self.assertEqual(cli.main(["profile", "derive", "--dry-run"]), 0)
+        self.assertFalse((store.opencode_dir() / "agents").exists())
 
     def test_derive_conflict_exit_2(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         cfg = profiles.load_profile_config("balanced")
-        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/kimi-k3.1-pro", target_dir=store.opencode_dir())
+        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
         target = store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("different\n", encoding="utf-8")
         with self.assertRaises(SystemExit) as cm:
-            cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"])
+            cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/gemma-4-26b-a4b-it"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_derive_two_runs_noop(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        self.assertEqual(cli.main(["profile", "derive"]), 0)
         # second run: state ok, no writes needed but command succeeds
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        self.assertEqual(cli.main(["profile", "derive"]), 0)
 
     def test_profile_use_pregenerates(self) -> None:
         # create a local profile with task_rules referencing kimi for implementer
@@ -143,10 +128,8 @@ class TestDeriveCLI(IsolatedEnv):
     def test_prune_removes_legitimate_orphan_without_force(self) -> None:
         # 旧プロファイル由来の正規生成物は --force なしで backup 付き削除される
         self.assertEqual(cli.main(["init"]), 0)
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
         derived = store.opencode_dir() / "agents" / "nf-implementer-kimi-k3.1-pro.md"
-        self.assertTrue(derived.is_file())
-        # balanced の task_rules は空なので、この派生定義は orphan になる
+        derived.write_text(derive.derive_text("implementer", "fastmetal/kimi-k3.1-pro"), encoding="utf-8")
         self.assertEqual(cli.main(["profile", "derive", "--prune"]), 0)
         self.assertFalse(derived.exists())
         backups = list((store.state_dir() / store.BACKUP_DIRNAME).rglob("nf-implementer-kimi-k3.1-pro.md"))
@@ -154,9 +137,8 @@ class TestDeriveCLI(IsolatedEnv):
 
     def test_prune_keeps_modified_orphan_without_force(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
         derived = store.opencode_dir() / "agents" / "nf-implementer-kimi-k3.1-pro.md"
-        derived.write_text(derived.read_text(encoding="utf-8") + "\n# user edit\n", encoding="utf-8")
+        derived.write_text(derive.derive_text("implementer", "fastmetal/kimi-k3.1-pro") + "\n# user edit\n", encoding="utf-8")
         self.assertEqual(cli.main(["profile", "derive", "--prune"]), 0)
         self.assertTrue(derived.exists())
 
@@ -169,6 +151,7 @@ class TestDeriveCLI(IsolatedEnv):
         balanced = profiles.load_profile("balanced")
         data = {
             "roles": dict(balanced),
+            "candidates": [{"model": "fastmetal/japan-deepseek-v4.1-flash-1017"}],
             "task_rules": [{"when": {"risk": "low"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017"}],
         }
         lp.write_text(json.dumps(data))
@@ -187,6 +170,7 @@ class TestDeriveCLI(IsolatedEnv):
         balanced = profiles.load_profile("balanced")
         data = {
             "roles": dict(balanced),
+            "candidates": [{"model": "fastmetal/kimi-k3.1-pro"}],
             "task_rules": [{"when": {"risk": "low"}, "model": "fastmetal/kimi-k3.1-pro"}],
         }
         lp.write_text(json.dumps(data))
@@ -202,13 +186,12 @@ class TestDeriveCLI(IsolatedEnv):
         balanced = profiles.load_profile("balanced")
         data = {
             "roles": dict(balanced),
+            "candidates": [{"model": "fastmetal/kimi-k3.1-pro"}],
             "task_rules": [{"when": {"role": "reviewer"}, "model": "fastmetal/kimi-k3.1-pro"}],
         }
         lp.write_text(json.dumps(data))
         self.assertEqual(cli.main(["init"]), 0)
-        self.assertEqual(
-            cli.main(["profile", "derive", "--role", "reviewer", "--model", "fastmetal/kimi-k3.1-pro"]), 0
-        )
+        self.assertEqual(cli.main(["profile", "derive", "--profile", "local"]), 0)
         derived = store.opencode_dir() / "agents" / "nf-reviewer-kimi-k3.1-pro.md"
         self.assertTrue(derived.is_file())
         # task_rules を外すと orphan になる
@@ -221,7 +204,7 @@ class TestDeriveCLI(IsolatedEnv):
         self.assertEqual(cli.main(["init"]), 0)
         before = list(store.USER_MANAGED_FILES)
         manifest_before = store.load_manifest(store.manifest_path())
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
+        self.assertEqual(cli.main(["profile", "derive"]), 0)
         self.assertEqual(list(store.USER_MANAGED_FILES), before)
         manifest_after = store.load_manifest(store.manifest_path())
         self.assertEqual(manifest_before, manifest_after)
@@ -229,8 +212,7 @@ class TestDeriveCLI(IsolatedEnv):
 
     def test_uninstall_removes_derived_matching(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
-        self.assertEqual(cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/kimi-k3.1-pro"]), 0)
-        derived = store.opencode_dir() / "agents" / "nf-implementer-kimi-k3.1-pro.md"
+        derived = store.opencode_dir() / "agents" / "nf-implementer-gemma-4-26b-a4b-it.md"
         self.assertTrue(derived.is_file())
         self.assertEqual(cli.main(["uninstall"]), 0)
         self.assertFalse(derived.is_file())

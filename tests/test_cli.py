@@ -187,6 +187,8 @@ class TestLifecycle(IsolatedEnv):
             # --force 無しで update が成功し、新しいパッケージ内容に同期される
             self.assertEqual(cli.main(["update"]), 0)
             self.assertIn("(v2)", agent.read_text(encoding="utf-8"))
+            derived = agent.with_name("nf-architect-gemma-4-26b-a4b-it.md")
+            self.assertIn("(v2)", derived.read_text(encoding="utf-8"))
             status2 = io.StringIO()
             with contextlib.redirect_stdout(status2):
                 cli.main(["status"])

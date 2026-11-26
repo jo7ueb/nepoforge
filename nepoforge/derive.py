@@ -95,8 +95,10 @@ def derive_plan(
     role: str | None = None,
     model: Any = None,
     target_dir: Any = None,
+    *,
+    previous_roles: dict[str, str] | None = None,
 ) -> list[DeriveItem]:
-    """対象ペアを決定し、各派生定義の計画 (ok/write/conflict) を返す。"""
+    """対象ペアの計画を返す。旧管理定義から再現できる場合のみ更新を許す。"""
     if target_dir is None:
         target_dir = store.opencode_dir()
     target_dir = Path(target_dir)
@@ -113,8 +115,6 @@ def derive_plan(
         if role not in store.USER_AGENT_IDS:
             raise NepoforgeError(f"unknown role: {role}")
         candidate_strs = {profiles.format_model(c.ref) for c in config.candidates}
-        for r, m in config.roles.items():
-            candidate_strs.add(m)
         if model_str not in candidate_strs:
             raise NepoforgeError(f"model not in profile candidates: {model_str}")
         key = (role, model_str)
@@ -142,8 +142,8 @@ def derive_plan(
     # 役割既定と同一のものは除外
     filtered: list[tuple[str, str]] = []
     for r, m in pairs:
-        default = config.roles.get(r) if isinstance(config.roles, dict) else None
-        if default == m:
+        default = config.roles.get(r)
+        if default and profiles.parse_model(default) == profiles.parse_model(m):
             continue
         filtered.append((r, m))
 
@@ -171,6 +171,10 @@ def derive_plan(
             current = target_file.read_text(encoding="utf-8")
             if current == expected_text:
                 state = "ok"
+            elif previous_roles and r in previous_roles and current == profiles.apply_to_agent(
+                r, previous_roles[r], model_str
+            ):
+                state = "update"
             else:
                 state = "conflict"
         items.append(

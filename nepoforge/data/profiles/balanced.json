@@ -1,11 +1,22 @@
 {
   "name": "balanced",
-  "description": "バランス型(既定)。判断系は軽量モデル、実装はコーディング・エージェント特化モデルに割り当てる。",
+  "description": "末端は Gemma 4、高リスクは GLM Flash Japan、複雑な統合判断は DeepSeek Flash Japan。",
   "roles": {
     "architect": "fastmetal/japan-glm-5.3-flash",
     "expert": "fastmetal/japan-glm-5.3-flash",
     "explore": "fastmetal/japan-glm-5.3-flash",
     "implementer": "fastmetal/beam-1.0",
     "reviewer": "fastmetal/japan-glm-5.3-flash"
-  }
+  },
+  "candidates": [
+    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 262144},
+    {"model": "fastmetal/japan-glm-5.3-flash", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1000000},
+    {"model": "fastmetal/japan-deepseek-v4.1-flash-1017", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1000000}
+  ],
+  "task_rules": [
+    {"when": {"complexity": "high"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017"},
+    {"when": {"risk": "high"}, "model": "fastmetal/japan-glm-5.3-flash"},
+    {"when": {"complexity": "low"}, "model": "fastmetal/gemma-4-26b-a4b-it"},
+    {"when": {"complexity": "medium"}, "model": "fastmetal/gemma-4-26b-a4b-it"}
+  ]
 }

@@ -1,11 +1,21 @@
 {
   "name": "performance",
-  "description": "品質最優先。設計・実装に高性能モデルを割り当てる。",
+  "description": "末端は Gemma 4、高難度・高リスクの判断は DeepSeek Flash Japan。",
   "roles": {
     "architect": "fastmetal/glm-5.3",
     "expert": "fastmetal/japan-deepseek-v4.1-flash-1017",
     "explore": "fastmetal/japan-glm-5.3-flash",
     "implementer": "fastmetal/kimi-k3.1-pro",
     "reviewer": "fastmetal/glm-5.3"
-  }
+  },
+  "candidates": [
+    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 262144},
+    {"model": "fastmetal/japan-deepseek-v4.1-flash-1017", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1000000}
+  ],
+  "task_rules": [
+    {"when": {"complexity": "high"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017"},
+    {"when": {"risk": "high"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017"},
+    {"when": {"complexity": "low"}, "model": "fastmetal/gemma-4-26b-a4b-it"},
+    {"when": {"complexity": "medium"}, "model": "fastmetal/gemma-4-26b-a4b-it"}
+  ]
 }

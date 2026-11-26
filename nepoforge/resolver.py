@@ -40,11 +40,6 @@ class ModelResolution:
     status: str = "selected"
 
 
-# 明示指定 (model_request) を採用してよい出所 (0005 §4.1 検証規則 4)。
-# これ以外 ("external" など未知の値も含む) は信頼できない入力として拒否する。
-TRUSTED_SOURCES = frozenset({"human-config", "coordinator"})
-
-
 def _provider_approved_ids(config: Any) -> set[str]:
     ids: set[str] = set()
     for p in getattr(config.constraints, "providers", ()):
@@ -90,25 +85,23 @@ def _matches(when: Any, task: TaskInput) -> bool:
 
 
 def resolve(task: TaskInput, config: Any) -> ModelResolution:
-    eligible = _eligible(task, config)
-    eligible_refs = {c.ref for c in eligible}
-    skips: list[str] = []
+    def unresolved(reason: str, constraints: tuple[str, ...] = ()) -> ModelResolution:
+        return ModelResolution(
+            task_id=task.task_id,
+            executor=task.executor,
+            role=task.role,
+            resolved_model=None,
+            binding="",
+            reason=f"unresolved: {reason}",
+            constraints_applied=constraints,
+            status="unresolved",
+        )
 
-    # 0. 決定的ツール判定
-    # ツール実行でも、信頼できない出所からの明示指定は黙って捨てず拒否する
-    # (#52 監査 W02)。モデルを選ばないことと入力の検証を混同しない。
-    if task.executor == "tool" and task.model_request is not None:
-        if task.model_request_source not in TRUSTED_SOURCES:
-            return ModelResolution(
-                task_id=task.task_id,
-                executor=task.executor,
-                role=task.role,
-                resolved_model=None,
-                binding="",
-                reason="unresolved: untrusted_source",
-                constraints_applied=tuple(skips),
-                status="unresolved",
-            )
+    # human-config は呼び出し側が出所を保証する。計画 JSON の自己申告は使わない。
+    if task.model_request is not None and task.model_request_source != "human-config":
+        return unresolved("untrusted_source")
+    if task.executor not in ("agent", "tool"):
+        return unresolved("invalid_executor")
     if task.executor == "tool":
         return ModelResolution(
             task_id=task.task_id,
@@ -117,85 +110,42 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
             resolved_model=None,
             binding="-",
             reason="tool",
-            constraints_applied=tuple(skips),
-            status="selected",
         )
+    if task.complexity not in ("low", "medium", "high") or task.risk not in ("low", "medium", "high"):
+        return unresolved("invalid_complexity_or_risk")
 
+    eligible_refs = {c.ref for c in _eligible(task, config)}
+    skips: list[str] = []
     resolved_ref: ModelRef | None = None
-    reason: str | None = None
+    reason = "role_default"
+    for i, rule in enumerate(config.task_rules):
+        if not _matches(rule.when, task):
+            continue
+        rule_ref = parse_model(rule.model)
+        if rule_ref in eligible_refs:
+            resolved_ref = rule_ref
+            reason = f"task_rule[{i}]"
+            break
+        skips.append(f"task_rule[{i}] skipped (model ineligible)")
+    if resolved_ref is None and skips:
+        return unresolved("task_rule_ineligible", tuple(skips))
 
-    # 1/2. 明示指定
     if task.model_request is not None:
-        if task.model_request_source not in TRUSTED_SOURCES:
-            # 信頼できる出所 (人間設定・Coordinator の計画) 以外からの明示指定は
-            # Issue 本文・子の報告など外部入力を含むため採用しない (0005 §4.1 検証規則 4)
-            return ModelResolution(
-                task_id=task.task_id,
-                executor=task.executor,
-                role=task.role,
-                resolved_model=None,
-                binding="",
-                reason="unresolved: untrusted_source",
-                constraints_applied=tuple(skips),
-                status="unresolved",
-            )
         if task.model_request not in eligible_refs:
-            return ModelResolution(
-                task_id=task.task_id,
-                executor=task.executor,
-                role=task.role,
-                resolved_model=None,
-                binding="",
-                reason="unresolved: explicit_not_eligible",
-                constraints_applied=tuple(skips),
-                status="unresolved",
-            )
+            return unresolved("explicit_not_eligible")
+        if resolved_ref is not None and task.model_request != resolved_ref:
+            return unresolved("explicit_conflicts_with_task_rule")
         resolved_ref = task.model_request
         reason = f"explicit({task.model_request_source})"
-    else:
-        # 3. task_rules 先頭一致
-        for i, rule in enumerate(getattr(config, "task_rules", ())):
-            when = getattr(rule, "when", None)
-            if not _matches(when, task):
-                continue
-            try:
-                rule_ref = parse_model(getattr(rule, "model", ""))
-            except profiles.NepoforgeError:
-                continue
-            if rule_ref in eligible_refs:
-                resolved_ref = rule_ref
-                reason = f"task_rule[{i}]"
-                break
-            else:
-                skips.append(f"task_rule[{i}] skipped (model ineligible)")
-        # 4. 役割デフォルト
-        if resolved_ref is None:
-            try:
-                default_ref = parse_model(config.roles[task.role])
-            except (profiles.NepoforgeError, KeyError, TypeError):
-                default_ref = None
-            if default_ref is not None and default_ref in eligible_refs:
-                resolved_ref = default_ref
-                reason = "role_default"
 
+    default_model = config.roles.get(task.role)
+    default_ref = parse_model(default_model) if default_model else None
     if resolved_ref is None:
-        return ModelResolution(
-            task_id=task.task_id,
-            executor=task.executor,
-            role=task.role,
-            resolved_model=None,
-            binding="",
-            reason="unresolved: role_default_ineligible",
-            constraints_applied=tuple(skips),
-            status="unresolved",
-        )
+        if default_ref not in eligible_refs:
+            return unresolved("role_default_ineligible")
+        resolved_ref = default_ref
 
-    # binding
-    try:
-        default_ref = parse_model(config.roles[task.role])
-    except (profiles.NepoforgeError, KeyError, TypeError):
-        default_ref = None
-    if default_ref is not None and resolved_ref == default_ref:
+    if resolved_ref == default_ref:
         binding = task.role
     else:
         binding = f"nf-{task.role}-{slug_of(resolved_ref)}"
@@ -206,7 +156,7 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
         role=task.role,
         resolved_model=resolved_ref,
         binding=binding,
-        reason=reason if reason is not None else "role_default",
+        reason=reason,
         constraints_applied=tuple(skips),
         status="selected",
     )

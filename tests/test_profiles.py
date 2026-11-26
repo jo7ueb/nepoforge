@@ -123,20 +123,26 @@ class TestParseModel(unittest.TestCase):
 
 class TestLoadProfileConfig(IsolatedEnv):
     def test_roles_only_profile_defaults(self) -> None:
-        cfg = profiles.load_profile_config("balanced")
-        bundled = set()
-        for name in profiles.available_profiles():
-            if name == "local":
-                continue
-            bundled.update(profiles.load_profile(name).values())
-        # 既定候補は同梱プロファイルの roles の和集合
-        self.assertEqual(len(cfg.candidates), len(bundled))
-        roles_models = set(cfg.roles.values())
-        cand_models = {profiles.format_model(c.ref) for c in cfg.candidates}
-        for m in roles_models:
-            self.assertIn(m, cand_models)
+        import json
+
+        local = store.local_profile_path()
+        local.parent.mkdir(parents=True, exist_ok=True)
+        roles = profiles.load_profile("economy")
+        local.write_text(json.dumps({"roles": roles}))
+        cfg = profiles.load_profile_config("local")
+        self.assertEqual({str(c.ref) for c in cfg.candidates}, set(roles.values()))
         self.assertEqual(cfg.constraints.max_parallel, 10)
         self.assertEqual(cfg.task_rules, ())
+
+    def test_bundled_candidates_do_not_include_legacy_premium_role_defaults(self) -> None:
+        for name in ("economy", "balanced", "performance"):
+            with self.subTest(profile=name):
+                config = profiles.load_profile_config(name)
+                candidates = {str(c.ref) for c in config.candidates}
+                self.assertIn("fastmetal/gemma-4-26b-a4b-it", candidates)
+                self.assertTrue(candidates.isdisjoint({
+                    "fastmetal/beam-1.0", "fastmetal/kimi-k3.1-pro", "fastmetal/glm-5.3",
+                }))
 
     def test_unknown_top_level_key_allowed(self) -> None:
         import json, tempfile

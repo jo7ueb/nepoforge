@@ -102,7 +102,22 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
                 raise SystemExit(2)
             plan.append(("update", rel))
 
-    if manifest is not None and not plan:
+    try:
+        cfg = profiles.load_profile_config(profile_name)
+        # manifest と一致する旧役割定義から、未改変の旧派生定義を識別する。
+        previous_roles = {}
+        for role in store.USER_AGENT_IDS:
+            rel = f"agents/{role}.md"
+            if state[rel] == "updatable":
+                previous_roles[role] = (config_dir / rel).read_text(encoding="utf-8")
+        dplan = derive.derive_plan(cfg, target_dir=config_dir, previous_roles=previous_roles)
+    except NepoforgeError as exc:
+        print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
+        dplan = []
+    if not dry_run:
+        _check_derive_conflicts(dplan, config_dir, force)
+
+    if manifest is not None and not plan and all(it.state == "ok" for it in dplan):
         if manifest.get("version") == store.VERSION and manifest.get("profile") == profile_name:
             print(f"up to date (version {manifest.get('version')}, profile {profile_name}). nothing to do")
             return 0
@@ -115,17 +130,7 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
             if action == "update":
                 print(f"--- diff: {rel}")
                 print(store.diff_text(config_dir / rel, store.DATA_DIR / rel), end="")
-        # 派生定義の計画も表示
-        try:
-            cfg = profiles.load_profile_config(profile_name)
-            dplan = derive.derive_plan(cfg, target_dir=config_dir)
-            for it in dplan:
-                print(f"  [derived {it.state:8}] {config_dir / it.rel}")
-                if it.state in ("write", "conflict"):
-                    target = config_dir / it.rel
-                    print(store.diff_text_vs(target if target.is_file() else None, it.expected_text, str(target)), end="")
-        except NepoforgeError:
-            pass
+        _derive_apply(dplan, config_dir, force, True)
         return 0
 
     for action, rel in plan:
@@ -137,15 +142,9 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(profiles.render(rel, prof), encoding="utf-8")
 
+    _derive_apply(dplan, config_dir, force, False)
     store.store_write_manifest(profile_name, expected)
     print(f"installed (version {store.VERSION}, profile {profile_name}). manifest: {store.manifest_path()}")
-    # 事前一括生成
-    try:
-        cfg = profiles.load_profile_config(profile_name)
-        dplan = derive.derive_plan(cfg, target_dir=config_dir)
-        _derive_apply(dplan, config_dir, force, False)
-    except NepoforgeError as exc:
-        print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
     return 0
 
 
@@ -712,11 +711,18 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
     for key in ("task_id", "role"):
         if not isinstance(raw.get(key), str):
             raise NepoforgeError(f"plan task requires string '{key}'")
+    if "capabilities" in raw and (
+        not isinstance(raw["capabilities"], list)
+        or not all(isinstance(cap, str) for cap in raw["capabilities"])
+    ):
+        raise NepoforgeError("plan task 'capabilities' must be a string array")
+    context_tokens = raw.get("context_tokens")
+    if context_tokens is not None and (type(context_tokens) is not int or context_tokens < 1):
+        raise NepoforgeError("plan task 'context_tokens' must be a positive integer")
     extras = {
         k: raw[k]
         for k in (
             "model_request",
-            "model_request_source",
             "executor",
             "capabilities",
             "complexity",
@@ -742,7 +748,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     """タスク計画の検証・ready 判定・予算ゲート (課金なし)。設計メモ 0005 §4.4・0008。"""
     tasks_raw = _read_plan_file(args.file)
     planned, extras = [], {}
-    for i, raw in enumerate(tasks_raw):
+    for raw in tasks_raw:
         task, ext = _plan_task_from_dict(raw)
         planned.append(task)
         extras[task.task_id] = ext
@@ -772,11 +778,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
     by_id = {t.task_id: t for t in planned}
 
     resolved: dict[str, str] = {}
+    resolutions: dict[str, resolver.ModelResolution] = {}
     unresolved: list[dict] = []
     for tid, ext in extras.items():
         executor = ext.get("executor", "agent")
         request = ext.get("model_request")
-        model_ref = profiles.parse_model(request) if request else None
+        model_ref = profiles.parse_model(request) if request is not None else None
         res = resolver.resolve(
             resolver.TaskInput(
                 task_id=tid,
@@ -787,13 +794,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 concern=ext.get("concern"),
                 context_tokens=ext.get("context_tokens"),
                 model_request=model_ref,
-                model_request_source=ext.get("model_request_source", "coordinator"),
+                # 計画 JSON は人間設定の出所を証明できない。
+                model_request_source="plan",
                 executor=executor,
             ),
             config,
         )
         if res.status == "selected" and res.resolved_model is not None:
             resolved[tid] = profiles.format_model(res.resolved_model)
+            resolutions[tid] = res
         elif res.status != "selected":
             # executor=tool の通常解決 (reason=tool, model=None) は未解決ではない
             unresolved.append({"task_id": tid, "reason": res.reason})
@@ -832,12 +841,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
             retries=ext.get("retries", args.retries),
         )
         d = budget.decide_launch(state, est, provider_budget_error=args.budget_error)
-        if d.allowed:
-            launch.append(tid)
-            reservations[tid] = d.estimated_cost_yen
-            state = replace(state, reserved_yen=state.reserved_yen + d.estimated_cost_yen)
-        else:
+        if not d.allowed:
             denied.append({"task_id": tid, "reason": d.reason})
+            continue
+        binding_problem = _plan_binding_problem(resolutions[tid], model)
+        if binding_problem:
+            denied.append({"task_id": tid, "reason": binding_problem})
+            continue
+        launch.append(tid)
+        reservations[tid] = d.estimated_cost_yen
+        state = replace(state, reserved_yen=state.reserved_yen + d.estimated_cost_yen)
     result = {
         "profile": profile_name,
         "ready": ready_ids,
@@ -846,6 +859,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "denied": denied,
         "not_ready": sorted(not_ready),
         "resolved": resolved,
+        "model_resolutions": {
+            tid: {"binding": res.binding, "reason": res.reason}
+            for tid, res in resolutions.items()
+        },
         "unresolved": unresolved,
     }
     if args.json:
@@ -860,6 +877,23 @@ def cmd_plan(args: argparse.Namespace) -> int:
         for u in unresolved:
             print(f"  unresolved: {u['task_id']} — {u['reason']}")
     return 0
+
+
+def _plan_binding_problem(resolution: resolver.ModelResolution, model: str) -> str | None:
+    role = resolution.role
+    binding = resolution.binding
+    path = store.opencode_dir() / "agents" / f"{binding}.md"
+    try:
+        if binding == role:
+            expected = profiles.render(f"agents/{role}.md", {role: model})
+        else:
+            expected = derive.derive_text(role, model)
+        actual = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeError, NepoforgeError):
+        return f"agent binding unavailable: {binding}"
+    if actual != expected:
+        return f"agent binding differs from managed definition: {binding}"
+    return None
 
 
 def unresolved_reason(unresolved: list[dict], task_id: str) -> str:
@@ -899,80 +933,33 @@ def cmd_profile(args: argparse.Namespace) -> int:
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
         return not_installed("profile use")
-    config_dir = store.opencode_dir()
-    prof = profiles.load_profile(args.name)
-    expected = {rel: sha256_text(profiles.render(rel, prof)) for rel in USER_MANAGED_FILES}
-    state = store.classify(config_dir, manifest, expected)
-    conflicts = [rel for rel, kind in state.items() if kind == "conflict"]
-    if conflicts:
-        print("conflict: 非管理ファイルがあるため停止しました:", file=sys.stderr)
-        for rel in conflicts:
-            print(f"  [conflict] {config_dir / rel}", file=sys.stderr)
-        raise SystemExit(2)
-    modified = [rel for rel, kind in state.items() if kind == "modified"]
-    if modified and not args.force:
-        print("conflict: 管理対象ファイルが利用者によって変更されているため停止しました:", file=sys.stderr)
-        for rel in modified:
-            print(f"  [modified] {config_dir / rel} (変更を退避するか、--force でバックアップ後に上書き)", file=sys.stderr)
-        raise SystemExit(2)
-    changes = [rel for rel, kind in state.items() if kind in ("missing", "updatable", "modified")]
-    if not changes:
-        print(f"profile is already '{args.name}'")
-    else:
-        for rel in changes:
-            print(f"  [update  ] {config_dir / rel}")
-    if args.dry_run:
-        # 派生定義の計画も表示
-        try:
-            cfg = profiles.load_profile_config(args.name)
-            plan = derive.derive_plan(cfg, target_dir=config_dir)
-            for it in plan:
-                print(f"  [derived {it.state:8}] {config_dir / it.rel}")
-        except NepoforgeError:
-            pass
-        print("dry-run: no changes made")
-        return 0
-    if changes:
-        for rel in changes:
-            backup = store.backup_file(config_dir, rel)
-            if backup:
-                print(f"  [backup  ] {rel} -> {backup}")
-            dest = config_dir / rel
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_text(profiles.render(rel, prof), encoding="utf-8")
-        store.store_write_manifest(args.name, expected)
-    # 事前一括生成
-    try:
-        cfg = profiles.load_profile_config(args.name)
-        plan = derive.derive_plan(cfg, target_dir=config_dir)
-        _derive_apply(plan, config_dir, args.force, False)
-    except NepoforgeError as exc:
-        print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
-    return 0
+    return sync_global(args.name, args.force, args.dry_run)
 
 
-def _derive_apply(plan, config_dir, force, dry_run):
-    """派生定義の計画を適用する共通処理 (profile derive / use / init で再利用)。"""
+def _check_derive_conflicts(plan, config_dir, force):
     conflicts = [it for it in plan if it.state == "conflict"]
-    if conflicts and not force and not dry_run:
+    if conflicts and not force:
         print("conflict: 派生定義が既存ファイルと異なるため停止しました:", file=sys.stderr)
         for it in conflicts:
             print(f"  [conflict] {config_dir / it.rel}", file=sys.stderr)
         raise SystemExit(2)
+
+
+def _derive_apply(plan, config_dir, force, dry_run):
+    """派生定義の計画を適用する共通処理 (profile derive / use / init で再利用)。"""
     if dry_run:
         for it in plan:
             print(f"  [derived {it.state:8}] {config_dir / it.rel}")
-            if it.state in ("write", "conflict"):
+            if it.state in ("write", "update", "conflict"):
                 target = config_dir / it.rel
                 print(store.diff_text_vs(target if target.is_file() else None, it.expected_text, str(target)), end="")
         return 0
+    _check_derive_conflicts(plan, config_dir, force)
     for it in plan:
         if it.state == "ok":
             continue
-        if it.state == "conflict" and not force:
-            continue
         target = config_dir / it.rel
-        if it.state == "conflict" and force:
+        if it.state in ("update", "conflict"):
             backup = store.backup_file(config_dir, it.rel)
             if backup:
                 print(f"  [backup  ] {it.rel} -> {backup}")

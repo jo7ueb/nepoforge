@@ -196,9 +196,48 @@ class TestResolve(unittest.TestCase):
         ), roles={"implementer": "fastmetal/japan-glm-5.3-flash"})
         ti = TaskInput(task_id="t1", role="implementer", context_tokens=200)
         res = resolve(ti, cfg)
-        # rule skipped, role default japan-glm has null context → not excluded → selected
-        self.assertEqual(res.status, "selected")
+        # 一致したルールが不適格でも役割既定には戻さない。
+        self.assertEqual(res.status, "unresolved")
+        self.assertEqual(res.reason, "unresolved: task_rule_ineligible")
         self.assertTrue(any("skipped" in c for c in res.constraints_applied))
+
+    def test_bundled_profiles_route_by_complexity_and_risk(self) -> None:
+        expected = {
+            "economy": ("japan-glm-5.3-flash", "japan-glm-5.3-flash"),
+            "balanced": ("japan-deepseek-v4.1-flash-1017", "japan-glm-5.3-flash"),
+            "performance": ("japan-deepseek-v4.1-flash-1017", "japan-deepseek-v4.1-flash-1017"),
+        }
+        for name, (complex_model, risk_model) in expected.items():
+            config = profiles.load_profile_config(name)
+            cases = [
+                ("explore", "investigation", "low", "low", "gemma-4-26b-a4b-it"),
+                ("implementer", None, "low", "low", "gemma-4-26b-a4b-it"),
+                ("architect", "documentation", "low", "low", "gemma-4-26b-a4b-it"),
+                ("reviewer", "requirements", "low", "low", "gemma-4-26b-a4b-it"),
+                ("reviewer", "correctness", "low", "medium", "gemma-4-26b-a4b-it"),
+                ("reviewer", "security", "low", "medium", "gemma-4-26b-a4b-it"),
+                ("implementer", None, "medium", "medium", "gemma-4-26b-a4b-it"),
+                ("architect", "integration", "high", "medium", complex_model),
+                ("implementer", None, "high", "low", complex_model),
+                ("reviewer", "security", "low", "high", risk_model),
+            ]
+            for role, concern, complexity, risk, model in cases:
+                with self.subTest(profile=name, role=role, concern=concern, complexity=complexity, risk=risk):
+                    result = resolve(TaskInput(
+                        "T1", role, complexity=complexity, risk=risk, concern=concern,
+                        capabilities=("tool_calling", "structured_output"),
+                    ), config)
+                    self.assertEqual(str(result.resolved_model), f"fastmetal/{model}")
+                    self.assertTrue(result.reason.startswith("task_rule["))
+
+    def test_human_request_cannot_override_matching_rule(self) -> None:
+        config = profiles.load_profile_config("balanced")
+        result = resolve(TaskInput(
+            "T1", "reviewer", complexity="low", risk="low",
+            model_request=ModelRef("fastmetal", "japan-deepseek-v4.1-flash-1017"),
+            model_request_source="human-config",
+        ), config)
+        self.assertEqual(result.reason, "unresolved: explicit_conflicts_with_task_rule")
 
 
 if __name__ == "__main__":
