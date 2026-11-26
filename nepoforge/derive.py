@@ -148,8 +148,20 @@ def derive_plan(
         filtered.append((r, m))
 
     items: list[DeriveItem] = []
+    seen_ids: dict[str, str] = {}
     for r, m in filtered:
         ref, agent_id = _validate(r, m)
+        # 異なるモデルが同じ slug に衝突すると、派生定義が黙って上書きされる
+        # (#61 項目 4)。provider を含めるか、対象から外すよう停止して報告する。
+        model_str = profiles.format_model(ref)
+        previous = seen_ids.get(agent_id)
+        if previous is not None and previous != model_str:
+            raise NepoforgeError(
+                f"derived agent_id collision: {agent_id} is produced by both"
+                f" {previous} and {model_str} (same slug). Disambiguate the model"
+                " refs or remove one from the profile"
+            )
+        seen_ids[agent_id] = model_str
         expected_text = derive_text(r, ref)
         rel = f"agents/{agent_id}.md"
         target_file = target_dir / rel

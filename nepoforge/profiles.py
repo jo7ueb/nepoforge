@@ -33,8 +33,21 @@ def available_profiles() -> list[str]:
     return names
 
 
+# プロファイル名の検証 (#61 項目 7)。パス区切り・親参照を拒否し、
+# `profiles.load_profile("../../x")` 等の経路外読み込みを防ぐ。
+PROFILE_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
+
+
+def _check_profile_name(name: str) -> None:
+    if name != "local" and not PROFILE_NAME_RE.fullmatch(name):
+        raise NepoforgeError(
+            f"invalid profile name: {name!r} (must match {PROFILE_NAME_RE.pattern})"
+        )
+
+
 def load_profile(name: str) -> dict[str, str]:
     """プロファイルを読み込み、役割の過不足・モデル表記を検証する。"""
+    _check_profile_name(name)
     if name == "local":
         path = store.local_profile_path()
         if not path.is_file():
@@ -265,6 +278,7 @@ def _default_candidate_models(name: str) -> set[str]:
 
 def load_profile_config(name: str) -> ProfileConfig:
     """プロファイルを読み込み、optional キー (candidates/task_rules/constraints) を検証する。"""
+    _check_profile_name(name)
     if name == "local":
         path = store.local_profile_path()
         if not path.is_file():
