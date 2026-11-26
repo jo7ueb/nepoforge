@@ -570,6 +570,17 @@ class TestDoctorFastmetalAuth(IsolatedEnv):
             result = cli._run_opencode_auth_list()
         self.assertEqual(result, ("failed", "no auth"))
 
+    def test_runner_rc_nonzero_truncates_long_stderr(self) -> None:
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="y" * 300 + "\nsecond line"
+        )
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch("nepoforge.cli.subprocess.run", return_value=completed):
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result, ("failed", "y" * 200))
+
     def test_runner_timeout(self) -> None:
         import subprocess
 
