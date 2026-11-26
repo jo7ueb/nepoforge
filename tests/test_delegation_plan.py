@@ -38,6 +38,19 @@ class DelegationPlanTests(unittest.TestCase):
             validate_contract(doc)
         self.assertTrue(validate_contract(doc, approved_exceptions={"T1"}))
 
+    def test_approved_exception_applies_to_its_own_task_in_multi_task_plan(self):
+        # 複数タスク計画でも例外は該当タスクだけに適用される (stale 変数の回帰)。
+        doc = contract()
+        doc["deliverables"].append("artifact2")
+        doc["tasks"].append(dict(doc["tasks"][0], task_id="T2", deliverables=["artifact2"]))
+        primary = doc["tasks"][0]
+        primary["executor"] = "primary"
+        primary["exception"] = {"reason": "human_approved", "detail": "approved",
+                                "scope": primary["write_scope"]}
+        with self.assertRaises(PlanError):
+            validate_contract(doc, approved_exceptions={"T1", "T2"})
+        self.assertTrue(validate_contract(doc, approved_exceptions={"T1"}))
+
     def test_rejects_unassigned_or_duplicate_deliverables(self):
         doc = contract()
         doc["tasks"][0]["deliverables"] = []

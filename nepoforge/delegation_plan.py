@@ -166,7 +166,7 @@ def validate_contract(
     if set(approved_exceptions) - ids:
         _fail("approved_exceptions references an unknown task")
     if any(
-        task_id in approved_exceptions
+        task.get("task_id") in approved_exceptions
         and (task.get("executor") != "primary"
              or not isinstance(task.get("exception"), Mapping)
              or task["exception"].get("reason") != "human_approved")

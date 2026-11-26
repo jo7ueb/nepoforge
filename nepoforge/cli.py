@@ -794,6 +794,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
         raise NepoforgeError("--retries cannot override strict contract retries")
     if getattr(args, "approved_exception", ()) and not strict:
         raise NepoforgeError("--approved-exception requires --contract")
+    if getattr(args, "plan_command", None) == "report" and not strict:
+        raise NepoforgeError("plan report requires --contract")
     if strict:
         try:
             document = json.loads(Path(args.file).read_text(encoding="utf-8"))
@@ -835,9 +837,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
     profile_name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
     config = profiles.load_profile_config(profile_name)
     project_policy = data_policy.load_project_policy()
-    if strict and args.max_parallel is not None and args.max_parallel > config.constraints.max_parallel:
+    max_parallel_value = getattr(args, "max_parallel", None)
+    if strict and max_parallel_value is not None and max_parallel_value > config.constraints.max_parallel:
         raise NepoforgeError("--max-parallel cannot exceed the profile limit in strict mode")
-    max_parallel = args.max_parallel or config.constraints.max_parallel
+    max_parallel = max_parallel_value or config.constraints.max_parallel
 
     run_report = None
     unknown_run_cost = False
@@ -934,6 +937,17 @@ def cmd_plan(args: argparse.Namespace) -> int:
         retryable = set()
         args.spent_yen = args.spent_yen if args.spent_yen is not None else 0.0
         args.reserved_yen = args.reserved_yen if args.reserved_yen is not None else 0.0
+    if args.plan_command == "report":
+        # 最終報告: 起動判定は行わず、確定 gate から時間・費用・予算差を要約する (#12)。
+        run_report["budget"] = _run_budget_block(
+            args.limit_yen, unknown_run_cost, args.spent_yen, args.reserved_yen
+        )
+        summary = delegation_run.summarize_report(run_report)
+        if args.json:
+            print(json.dumps(summary, ensure_ascii=False, indent=2))
+        else:
+            print(_format_run_summary(summary))
+        return 0
     ready_ids = planning.ready_tasks(
         planned, accepted=accepted, running=running,
         failed=failed - retryable if strict else failed, max_parallel=max_parallel
@@ -1032,12 +1046,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
     }
     if strict:
         run_report = dict(run_report or {})
-        run_report["budget"] = {
-            "limit_yen": str(args.limit_yen) if args.limit_yen is not None else None,
-            "spent_yen": None if unknown_run_cost else str(args.spent_yen),
-            "reserved_yen": None if unknown_run_cost else str(args.reserved_yen),
-            "estimate_basis": "unknown" if unknown_run_cost else "profile price table and token limits",
-        }
+        run_report["budget"] = _run_budget_block(
+            args.limit_yen, unknown_run_cost, args.spent_yen, args.reserved_yen
+        )
         result.update(
             run_id=args.run_id,
             plan_sha256=digest,
@@ -1064,6 +1075,52 @@ def cmd_plan(args: argparse.Namespace) -> int:
         for u in unresolved:
             print(f"  unresolved: {u['task_id']} — {u['reason']}")
     return 0
+
+
+def _run_budget_block(limit_yen, unknown_run_cost, spent_yen, reserved_yen) -> dict:
+    """run_report["budget"] の共通ブロック (ready と report で同じ値になる)。"""
+    return {
+        "limit_yen": str(limit_yen) if limit_yen is not None else None,
+        "spent_yen": None if unknown_run_cost else str(spent_yen),
+        "reserved_yen": None if unknown_run_cost else str(reserved_yen),
+        "estimate_basis": "unknown" if unknown_run_cost else "profile price table and token limits",
+    }
+
+
+def _format_yen(value: object) -> str:
+    """表示用の金額。不明は 0 円と偽らず「不明」とする (#12)。"""
+    if value is None or value == "unknown":
+        return "不明"
+    return f"約 {Decimal(str(value)):.2f}円"
+
+
+def _format_run_summary(summary: dict) -> str:
+    """run_report 要約の人間可読な最終報告 (#12)。時間と費用は常に含める。"""
+    cost = summary["cost"]
+    if cost["state"] == "unknown":
+        reason = cost.get("reason") or "理由不明"
+        cost_line = f"API費用: 不明（理由: {reason}）"
+    else:
+        cost_line = f"API費用: {_format_yen(cost['total'])}（{cost['basis']}）"
+    lines = [
+        f"所要時間: {summary['walltime_text']}",
+        f"実行状態: {summary['outcome']}",
+        cost_line,
+        f"内訳: Primary {_format_yen(cost['primary'])} / サブエージェント {_format_yen(cost['children'])}",
+    ]
+    budget = summary.get("budget")
+    limit_text = _format_yen(budget.get("limit_yen")) if budget else None
+    if budget and limit_text != "不明":
+        remaining = budget.get("remaining_yen")
+        if remaining in (None, "unknown"):
+            lines.append(f"予算: 上限 {limit_text} / 残額 不明")
+        elif budget.get("over"):
+            lines.append(f"予算: 上限 {limit_text} / 超過 {-Decimal(str(remaining)):.2f}円")
+        else:
+            lines.append(f"予算: 上限 {limit_text} / 残り {Decimal(str(remaining)):.2f}円")
+    else:
+        lines.append("予算: 上限未設定")
+    return "\n".join(lines)
 
 
 def _plan_binding_problem(resolution: resolver.ModelResolution, model: str) -> str | None:
@@ -1531,6 +1588,22 @@ def build_parser() -> argparse.ArgumentParser:
     pready.set_defaults(public_strict_options=False)
     pready.add_argument("--json", action="store_true", help="JSON で出力する")
     pready.set_defaults(fn=cmd_plan)
+    preport = pplan.add_parser(
+        "report",
+        help="確定した gate snapshot から所要時間・費用・予算差の最終報告を生成する (課金なし)",
+    )
+    preport.add_argument("file", help="計画 JSON ({\"tasks\": [...]})")
+    preport.add_argument("--profile", help="モデル解決に使うプロファイル (既定: 現行)")
+    preport.add_argument("--limit-yen", type=float, help="承認済み予算上限 (円)。指定時に残額・超過を表示")
+    preport.add_argument("--gate", help="gate snapshot JSON (厳格モード必須)")
+    preport.add_argument("--run-id", help="gate snapshot の run ID (厳格モード必須)")
+    preport.add_argument("--json", action="store_true", help="JSON で出力する")
+    preport.add_argument("--contract", action="store_true", help="厳格な delegation contract として検証する")
+    preport.add_argument("--approved-exception", action="append", default=[], metavar="TASK_ID",
+                         help="human_approved 例外への人間の承認入力 (繰返し可)")
+    pvalidate.set_defaults(public_strict_options=False)
+    preport.set_defaults(public_strict_options=False)
+    preport.set_defaults(fn=cmd_plan)
 
     p = sub.add_parser("validate", help="同梱データの整合性を検証する (課金なし・CI 用)")
     p.add_argument("--json", action="store_true", help="JSON で出力する")
