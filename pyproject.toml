@@ -34,4 +34,5 @@ nepoforge = [
     "data/model-routes.json",
     "data/templates/*.jsonc",
     "data/plugins/*.ts",
+    "data/plugins/*.mjs",
 ]

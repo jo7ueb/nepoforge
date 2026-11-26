@@ -1,5 +1,7 @@
-"""v2.4.2 plugin/API static contract tests; no OpenCode runtime is started."""
+"""OpenCode API source-contract and dependency-free plugin-core behavior tests."""
 from pathlib import Path
+import shutil
+import subprocess
 import unittest
 
 
@@ -39,9 +41,13 @@ class RuntimePluginContract(unittest.TestCase):
 
     def test_event_monitor_scope_accumulation_and_unknown_currency(self):
         self.assertIn("event.subscribe()", self.source)
-        self.assertIn('evt.type === "session.usage.updated"', self.source)
+        self.assertIn("await consumeEvents(event.subscribe(), handleEvent, handleEventError)", self.source)
+        self.assertIn("track({ id: p.sessionID, parentID: p.parentID })", self.source)
+        self.assertIn("resolveSessionScope(", self.source)
+        self.assertIn("const handleEventError = async", self.source)
         self.assertIn("sessionUsage.set(sessionID", self.source)
-        self.assertIn("stepUsage.set(`${sessionID}:${payload.assistantMessageID}`", self.source)
+        self.assertIn("normalizeUsageEvent(evt)", self.source)
+        self.assertIn("stepUsage.set(`${sessionID}:${assistantMessageID}`", self.source)
         self.assertIn("if (cumulative) {", self.source)
         self.assertIn("costUSD += cumulative.costUSD", self.source)
         self.assertIn("NEPOFORGE_RUNTIME_GUARD_MAX_COST_USD", self.source)
@@ -51,7 +57,9 @@ class RuntimePluginContract(unittest.TestCase):
 
     def test_scoped_failures_interrupt_and_lifecycle_are_declared_api(self):
         self.assertIn("handledFailures.has(identity)", self.source)
-        self.assertIn("`${sessionID}:${messageID}:${callID}`", self.source)
+        self.assertIn("failureIdentity(sessionID, callID)", self.source)
+        self.assertIn("recordFailure(p.sessionID, p.id, p.error)", self.source)
+        self.assertIn("recordFailure(result.sessionID, result.id, result.error)", self.source)
         self.assertIn("const targets = [...sessions.keys()].filter(inScope)", self.source)
         self.assertIn("registration.dispose()", self.source)
         self.assertNotIn("experimental.session.compacting", self.source)
@@ -59,7 +67,7 @@ class RuntimePluginContract(unittest.TestCase):
         self.assertIn("cannot protect if unloaded", self.source)
 
     def test_interrupt_fanout_dispatches_all_before_settling(self):
-        latch = self.source.split("const latch = async () => {", 1)[1].split(
+        latch = self.source.split("const latch = () => {", 1)[1].split(
             "\n    const track =", 1
         )[0]
         interrupt_one = self.source.split("const interruptOne = async (id: string) => {", 1)[1].split(
@@ -67,7 +75,7 @@ class RuntimePluginContract(unittest.TestCase):
         )[0]
         self.assertIn("const targets = [...sessions.keys()].filter(inScope)", latch)
         self.assertIn("const requests = targets.map((id) => interruptOne(id))", latch)
-        self.assertIn("await Promise.allSettled(requests)", latch)
+        self.assertIn("void Promise.allSettled(requests)", latch)
         self.assertNotIn("await interruptOne(id)", latch)
         self.assertIn("await session.interrupt({ sessionID: id, resume: false })", interrupt_one)
         self.assertIn("} catch {", interrupt_one)
@@ -76,8 +84,16 @@ class RuntimePluginContract(unittest.TestCase):
         self.assertIn('status: "error"', self.source)
         self.assertLess(
             latch.index("const requests = targets.map((id) => interruptOne(id))"),
-            latch.index("await Promise.allSettled(requests)"),
+            latch.index("void Promise.allSettled(requests)"),
         )
+
+    def test_runtime_plugin_core_behaviors(self):
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is unavailable")
+        script = Path(__file__).with_name("runtime_plugin_behavior.mjs")
+        result = subprocess.run([node, str(script)], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_default_export_and_module_shape(self):
         self.assertIn("export const RuntimeGuardPlugin:", self.source)

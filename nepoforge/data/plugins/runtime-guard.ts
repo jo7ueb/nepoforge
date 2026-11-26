@@ -10,6 +10,14 @@
  */
 import type { Plugin as PluginTypes } from "@opencode/plugin"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
+import {
+  consumeEvents,
+  failureIdentity,
+  isInScope,
+  normalizeSessionRecord,
+  normalizeUsageEvent,
+  resolveSessionScope,
+} from "./runtime-guard-core.mjs"
 
 type AnyRecord = Record<string, any>
 
@@ -33,16 +41,7 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
     let latched = false
     let monitorFailed = false
 
-    const inScope = (id: string) => {
-      let current: string | undefined = id
-      const seen = new Set<string>()
-      while (current && !seen.has(current)) {
-        if (roots.has(current)) return true
-        seen.add(current)
-        current = sessions.get(current)
-      }
-      return false
-    }
+    const inScope = (id: string) => isInScope(id, roots, sessions)
     const interruptOne = async (id: string) => {
       if (interruptResults.has(id)) return
       // If the request never settles, leave its outcome explicitly pending/unknown.
@@ -59,20 +58,32 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
         })
       }
     }
-    const latch = async () => {
+    const latch = () => {
       if (latched) return
       latched = true
       const targets = [...sessions.keys()].filter(inScope)
       const requests = targets.map((id) => interruptOne(id))
       // Fan out first: rejection or a never-settling request cannot stop dispatch to later targets.
-      // allSettled may remain pending forever; those entries stay status=pending, not confirmed stopped.
-      await Promise.allSettled(requests)
+      // Do not block event consumption on a stalled interrupt; pending is not confirmed stopped.
+      void Promise.allSettled(requests)
     }
     const track = (row: AnyRecord) => {
-      if (typeof row?.id !== "string") throw new Error("invalid session")
-      sessions.set(row.id, typeof row.parentID === "string" ? row.parentID : undefined)
-      if (latched && inScope(row.id)) void interruptOne(row.id)
+      const session = normalizeSessionRecord(row)
+      sessions.set(session.id, session.parentID)
+      if (latched && inScope(session.id)) void interruptOne(session.id)
     }
+    const resolveScope = (id: string) => resolveSessionScope(
+      id,
+      roots,
+      sessions,
+      async (sessionID) => {
+        const record = await session.get({ sessionID })
+        return record ? normalizeSessionRecord(record) : undefined
+      },
+      async (sessionID) => {
+        if (latched) await interruptOne(sessionID)
+      },
+    )
     const totals = () => {
       const sessionIDs = new Set([...sessionUsage.keys(), ...[...stepUsage.values()].map((v) => v.sessionID)])
       let costUSD = 0
@@ -99,12 +110,8 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       const total = totals()
       if (total.costUSD >= maxCostUSD || total.tokens >= maxTokens) await latch()
     }
-    const recordFailure = async (sessionID: string, messageID: string, callID: string, error: unknown) => {
-      if (typeof sessionID !== "string" || typeof messageID !== "string" || typeof callID !== "string") {
-        await latch()
-        return
-      }
-      const identity = `${sessionID}:${messageID}:${callID}`
+    const recordFailure = async (sessionID: string, callID: string, error: unknown) => {
+      const identity = failureIdentity(sessionID, callID)
       if (handledFailures.has(identity)) return
       handledFailures.add(identity)
       const text = String((error as AnyRecord)?.message ?? error ?? "").toLowerCase()
@@ -119,27 +126,17 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       failures.set(key, count)
       if (count >= 3) await latch()
     }
-    const countUsageEvent = (evt: AnyRecord) => {
-      const payload = evt?.properties ?? {}
-      const sessionID = payload.sessionID
-      if (!sessionID) throw new Error("usage event missing sessionID")
-      if (!sessions.has(sessionID)) throw new Error("session ancestry unknown")
-      if (!inScope(sessionID)) return
-      const t = payload.tokens
-      const tokenParts = t && [t.input, t.output, t.reasoning ?? 0, t.cache?.read ?? 0, t.cache?.write ?? 0]
-      if (typeof payload.cost !== "number" || !Number.isFinite(payload.cost) || payload.cost < 0
-          || !tokenParts || tokenParts.some((n: number) => !Number.isFinite(n) || n < 0)) {
-        throw new Error("usage event incomplete; USD cost/tokens required")
-      }
-      const tokenCount = tokenParts.reduce((a: number, b: number) => a + b, 0)
+    const countUsageEvent = async (evt: AnyRecord) => {
+      const usage = normalizeUsageEvent(evt)
+      const { sessionID, costUSD, tokens: tokenCount, assistantMessageID } = usage
+      if (!(await resolveScope(sessionID))) throw new Error("session ancestry unavailable")
       if (evt.type === "session.usage.updated") {
         // Session cumulative source has no assistantMessageID; replace by session.
-        sessionUsage.set(sessionID, { costUSD: payload.cost, tokens: tokenCount })
+        sessionUsage.set(sessionID, { costUSD, tokens: tokenCount })
       } else {
-        if (typeof payload.assistantMessageID !== "string") throw new Error("step event missing assistantMessageID")
         // Step events are per assistant message. Repeated terminal events replace by identity.
-        stepUsage.set(`${sessionID}:${payload.assistantMessageID}`, {
-          sessionID, costUSD: payload.cost, tokens: tokenCount,
+        stepUsage.set(`${sessionID}:${assistantMessageID}`, {
+          sessionID, costUSD, tokens: tokenCount,
         })
       }
       void checkLimits()
@@ -164,44 +161,57 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
     const registrations = await Promise.all([
       session.hook("retry", async (input) => {
         const retry = input as AnyRecord
-        if (inScope(retry.sessionID) && (latched || monitorFailed)) {
+        if ((await resolveScope(retry.sessionID)) && (latched || monitorFailed)) {
           retry.decision = { retry: false }
         }
       }),
       tool.hook("execute.after", async (input) => {
         const result = input as AnyRecord
-        if (!inScope(result.sessionID) || result.status !== "error") return
-        await recordFailure(result.sessionID, result.messageID, result.id, result.error)
+        if (!(await resolveScope(result.sessionID)) || result.status !== "error") return
+        await recordFailure(result.sessionID, result.id, result.error)
       }),
       tool.hook("execute.before", async (input) => {
         const call = input as AnyRecord
-        if (inScope(call.sessionID) && (latched || monitorFailed)) {
+        if ((await resolveScope(call.sessionID)) && (latched || monitorFailed)) {
           throw new ToolError({ message: "Runtime guard latched; tool execution rejected" })
         }
       }),
     ])
 
     // v2.4.2 event domain is an AsyncIterable, not a generic `event` hook.
+    const handleEvent = async (row: AnyRecord) => {
+      if (row.type === "session.usage.updated" || row.type === "session.step.ended"
+          || row.type === "session.step.failed") {
+        await countUsageEvent(row)
+      } else if (row.type === "session.tool.failed") {
+        const p = row.properties ?? {}
+        if (typeof p.sessionID !== "string" || !(await resolveScope(p.sessionID))) return
+        await recordFailure(p.sessionID, p.id, p.error)
+      } else if (row.type === "session.created") {
+        const p = row.properties ?? {}
+        track({ id: p.sessionID, parentID: p.parentID })
+      }
+    }
+    const handleEventError = async (_error: unknown, row: AnyRecord) => {
+      // A malformed or out-of-order event degrades this run and latches known in-scope
+      // sessions, but does not terminate the event stream for later observations.
+      monitorFailed = true
+      if (typeof row?.properties?.sessionID === "string") {
+        try {
+          await resolveScope(row.properties.sessionID)
+        } catch {
+          // Keep the failure latched without guessing that an unrelated session is in scope.
+        }
+      }
+      latch()
+    }
     const monitor = (async () => {
       try {
-        for await (const evt of event.subscribe()) {
-          const row = evt as AnyRecord
-          if (row.type === "session.usage.updated" || row.type === "session.step.ended"
-              || row.type === "session.step.failed") {
-            countUsageEvent(row)
-          } else if (row.type === "session.tool.failed") {
-            const p = row.properties ?? {}
-            if (!p.sessionID || !inScope(p.sessionID)) continue
-            await recordFailure(p.sessionID, p.assistantMessageID, p.id, p.error)
-          } else if (row.type === "session.created") {
-            const data = row.properties
-            track(data)
-          }
-        }
+        await consumeEvents(event.subscribe(), handleEvent, handleEventError)
         throw new Error("event stream ended")
       } catch {
         monitorFailed = true
-        await latch()
+        latch()
       }
     })()
 

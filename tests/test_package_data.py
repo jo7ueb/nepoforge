@@ -9,6 +9,9 @@ class TestPackageData(unittest.TestCase):
         resource = files("nepoforge").joinpath("data/plugins/runtime-guard.ts")
         self.assertTrue(resource.is_file())
         self.assertTrue(resource.read_text(encoding="utf-8").strip())
+        core = files("nepoforge").joinpath("data/plugins/runtime-guard-core.mjs")
+        self.assertTrue(core.is_file())
+        self.assertTrue(core.read_text(encoding="utf-8").strip())
 
 
 if __name__ == "__main__":
