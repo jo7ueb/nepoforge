@@ -447,14 +447,20 @@ def _one_line(value: object) -> str:
 
 
 def _tool_version(name: str) -> str | None:
+    return _tool_version_with_exe(name)[1]
+
+
+def _tool_version_with_exe(name: str) -> tuple[str | None, str | None]:
+    """(実行パス, バージョン行) を返す。PATH に無ければ (None, None)。"""
     exe = shutil.which(name)
     if exe is None:
-        return None
+        return None, None
     try:
         result = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-    return (result.stdout or result.stderr).strip().splitlines()[0] if (result.stdout or result.stderr) else "unknown"
+        return exe, "unknown"
+    output = (result.stdout or result.stderr).strip().splitlines()
+    return exe, output[0] if output else "unknown"
 
 
 def _run_opencode_auth_list() -> tuple[str, str]:
@@ -549,8 +555,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     for tool in ("opencode", "git", "gh"):
-        version = _tool_version(tool)
-        ok = version is not None and version != "unknown"
+        # 実行パスとバージョン取得を 1 回の探索にまとめる (PATH の探索を 2 度繰り返さない)。
+        exe, version = _tool_version_with_exe(tool)
+        ok = exe is not None and version is not None and version != "unknown"
         checks.append((f"{tool} on PATH", ok, version or "not found"))
 
     global_config = store.opencode_dir()
