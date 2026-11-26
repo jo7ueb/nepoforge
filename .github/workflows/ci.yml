@@ -1,0 +1,98 @@
+name: CI
+
+# 全体の回帰検証は GitHub Actions に集約する (#11)。
+# - 秘密情報・実 API・有料モデルは使わない (モック・合成データのみ)。
+# - 各エージェントは担当範囲の最小限の試験だけを行い、全体は CI に委ねる。
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+# 同じ PR の古い実行は取り消し、最新差分を優先する。
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+# 最小権限。読み取りだけで足りる。
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: "1"
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        # pyproject.toml の requires-python = ">=3.11" に対応する下限と最新の 2 版だけを使う。
+        python-version: ["3.11", "3.x"]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and test dependencies
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip
+          python -m pip install --disable-pip-version-check -e .
+
+      - name: Run test suite
+        # 課金なしの単体・統合テスト。失敗すると job が失敗し、PR のチェックが赤になる。
+        run: python -m unittest discover -s tests -t . -v
+
+      - name: Validate bundled configuration
+        # スキーマ・frontmatter・役割参照・プロファイル・テンプレートの整合性 (#11)。
+        # 不正な設定が 1 件でもあれば終了コード 1 で失敗する (詳細は問題一覧として出力する)。
+        run: python -m nepoforge validate
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --disable-pip-version-check --upgrade pip build
+          python -m build
+
+      - name: Install the wheel into an isolated environment
+        # 配布物だけ (リポジトリのソースを使わずに) 導入でき、CLI と同梱データが動くことを確かめる。
+        working-directory: ${{ runner.temp }}
+        run: |
+          python -m venv venv
+          venv/bin/python -m pip install --disable-pip-version-check "$GITHUB_WORKSPACE"/dist/*.whl
+          venv/bin/python -m nepoforge --version
+          venv/bin/python -c "import importlib.resources as r; print(sorted(p.name for p in r.files('nepoforge.data').iterdir()))"
+
+      - name: Check distribution consistency
+        # README に載っている基本操作と、配布データが wheel に含まれていることを確かめる。
+        working-directory: ${{ runner.temp }}
+        run: |
+          export XDG_CONFIG_HOME="$PWD/config"
+          export XDG_STATE_HOME="$PWD/state"
+          mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
+          venv/bin/python -m nepoforge init --dry-run
+          venv/bin/python -m nepoforge init
+          venv/bin/python -m nepoforge status
+          venv/bin/python -m nepoforge doctor || [ $? -eq 1 ]
+          venv/bin/python -m nepoforge uninstall

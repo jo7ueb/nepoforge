@@ -47,7 +47,7 @@ Nepoforge は、個人・小規模チーム向けに、役割分担した AI エ
 
 ## Phase 2 — Evaluation & Optimization
 
-- [ ] #11 設定ファイルの自動検証と CI の整備
+- [x] #11 設定ファイルの自動検証と CI の整備 (`nepoforge validate` と `.github/workflows/ci.yml`)
 - [ ] #12 エージェント実行履歴・トークン・費用の記録
 - [ ] #13 再現可能なベンチマーク環境の構築
 - [ ] #14 モデル構成の比較評価

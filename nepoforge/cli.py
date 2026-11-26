@@ -1,7 +1,7 @@
 """nepoforge CLI (#47): ユーザー単位の導入・更新・診断。
 
 コマンド:
-    init / update / status / uninstall / doctor / enable / disable / profile
+    init / update / status / uninstall / doctor / enable / disable / profile / plan / validate
 
 設計: docs/design/0003-package-cli.md
 安全方針: #9 (nf_workbench.py) の機構を引き継ぐ — dry-run、衝突時停止、
@@ -19,7 +19,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive
+from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive, validate
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -447,14 +447,20 @@ def _one_line(value: object) -> str:
 
 
 def _tool_version(name: str) -> str | None:
+    return _tool_version_with_exe(name)[1]
+
+
+def _tool_version_with_exe(name: str) -> tuple[str | None, str | None]:
+    """(実行パス, バージョン行) を返す。PATH に無ければ (None, None)。"""
     exe = shutil.which(name)
     if exe is None:
-        return None
+        return None, None
     try:
         result = subprocess.run([exe, "--version"], capture_output=True, text=True, timeout=10)
     except (OSError, subprocess.TimeoutExpired):
-        return "unknown"
-    return (result.stdout or result.stderr).strip().splitlines()[0] if (result.stdout or result.stderr) else "unknown"
+        return exe, "unknown"
+    output = (result.stdout or result.stderr).strip().splitlines()
+    return exe, output[0] if output else "unknown"
 
 
 def _run_opencode_auth_list() -> tuple[str, str]:
@@ -549,8 +555,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     checks: list[tuple[str, bool, str]] = []
 
     for tool in ("opencode", "git", "gh"):
-        version = _tool_version(tool)
-        ok = version is not None and version != "unknown"
+        # 実行パスとバージョン取得を 1 回の探索にまとめる (PATH の探索を 2 度繰り返さない)。
+        exe, version = _tool_version_with_exe(tool)
+        ok = exe is not None and version is not None and version != "unknown"
         checks.append((f"{tool} on PATH", ok, version or "not found"))
 
     global_config = store.opencode_dir()
@@ -1280,6 +1287,23 @@ def dedent_two(text: str) -> str:
 # entry point
 
 
+def cmd_validate(args: argparse.Namespace) -> int:
+    """同梱データ (エージェント・コマンド・プロファイル・テンプレート) を検証する (#11)。
+
+    課金・ネットワークなし。問題が 1 件でもあれば終了コード 1 で失敗する (CI 用)。
+    """
+    problems = validate.collect_problems()
+    if args.json:
+        print(json.dumps({"valid": not problems, "problems": problems}, ensure_ascii=False, indent=2))
+    elif problems:
+        for item in problems:
+            print(validate.format_problem(item), file=sys.stderr)
+        print(f"validation failed ({len(problems)} problems)", file=sys.stderr)
+    else:
+        print("bundled data is consistent")
+    return 0 if not problems else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="nepoforge",
@@ -1376,6 +1400,10 @@ def build_parser() -> argparse.ArgumentParser:
     pready.add_argument("--budget-error", action="store_true", help="provider 予算超過後の停止モード (全起動を拒否)")
     pready.add_argument("--json", action="store_true", help="JSON で出力する")
     pready.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("validate", help="同梱データの整合性を検証する (課金なし・CI 用)")
+    p.add_argument("--json", action="store_true", help="JSON で出力する")
+    p.set_defaults(fn=cmd_validate)
 
     return parser
 

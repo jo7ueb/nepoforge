@@ -160,10 +160,21 @@ class TestLifecycle(IsolatedEnv):
             revised.unlink(missing_ok=True)
 
         # doctor (サンドボックスには provider・認証が無いため全体の終了コードは
-        # 環境依存になる。個別のチェック行を検証する)
+        # 環境依存になる。個別のチェック行を検証する)。
+        # opencode の有無は実行環境に依存するため、PATH 上にある環境を模す (#11: CI には入れない)。
+        # find_project_root も同じ git を呼ぶため、git だけは実コマンドに委ねる。
+        real_run = subprocess.run
+
+        def fake_version(argv, *args, **kwargs):
+            if "--version" in argv:
+                return subprocess.CompletedProcess(argv, 0, stdout=f"{Path(argv[0]).name} version 0\n", stderr="")
+            return real_run(argv, *args, **kwargs)
+
         self.cd(repo1)
         stdout = io.StringIO()
-        with unittest.mock.patch.object(cli, "_run_opencode_auth_list", return_value=("ok", "[]")):
+        with unittest.mock.patch.object(cli, "_run_opencode_auth_list", return_value=("ok", "[]")), \
+                unittest.mock.patch.object(cli.shutil, "which", return_value="/fake/opencode"), \
+                unittest.mock.patch.object(cli.subprocess, "run", side_effect=fake_version):
             with contextlib.redirect_stdout(stdout):
                 rc = cli.main(["doctor"])
         out = stdout.getvalue()
