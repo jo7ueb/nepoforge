@@ -79,8 +79,8 @@ def _runtime_report(guard: Any) -> dict[str, Any]:
                 "reserved_yen": _json_value(getattr(snapshot, "reserved_yen", None)),
             })
     active = sorted(getattr(guard, "_active_sessions", set()))
-    requests = [{"session_id": sid, "reason": getattr(guard, "latch_reason", None)}
-                for sid in active] if getattr(guard, "is_latched", False) else []
+    candidates = ([{"session_id": sid, "reason": getattr(guard, "latch_reason", None)}
+                  for sid in active] if getattr(guard, "is_latched", False) else [])
     observed_sessions = sum(
         getattr(snapshot, "last_observed_ms", None) is not None
         for snapshot in snapshots.values()
@@ -100,7 +100,12 @@ def _runtime_report(guard: Any) -> dict[str, Any]:
             "reserved_yen": _json_value(getattr(guard, "reserved_yen", None)),
         },
         "sessions": sessions,
-        "stop_requests": requests,
+        # RuntimeGuard does not retain dispatcher results. These are only
+        # sessions that may have been targeted by its latch, not call evidence.
+        "interrupt_observation": {
+            "adapter_status": "unknown",
+            "candidate_sessions": candidates,
+        },
         "observation_status": observation_status,
     }
 

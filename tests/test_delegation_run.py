@@ -259,7 +259,10 @@ class DelegationRunTests(unittest.TestCase):
         runtime = _runtime_report(guard)
         self.assertEqual(runtime["guard_state"]["stop_reason"], "monitor disconnected")
         self.assertEqual(runtime["observation_status"], "stopped")
-        self.assertEqual(runtime["stop_requests"][0]["session_id"], "s")
+        self.assertEqual(runtime["interrupt_observation"]["adapter_status"], "unknown")
+        self.assertEqual(
+            runtime["interrupt_observation"]["candidate_sessions"][0]["session_id"], "s"
+        )
 
 
 if __name__ == "__main__":
