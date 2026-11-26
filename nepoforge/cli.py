@@ -352,9 +352,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
             print(f"  [kept    ] {rel} (利用者が変更しているため残しました。不要なら手動で削除してください)")
             continue
         if current != recorded.get(rel):
-            backup = store.backup_file(config_dir, rel)
-            if backup:
-                print(f"  [backup  ] {rel} -> {backup}")
+            if args.dry_run:
+                print(f"  [backup  ] {rel} (dry-run: バックアップ予定)")
+            else:
+                backup = store.backup_file(config_dir, rel)
+                if backup:
+                    print(f"  [backup  ] {rel} -> {backup}")
         if args.dry_run:
             print(f"  [removed ] {rel} (dry-run)")
         else:
@@ -375,9 +378,12 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
                 print(f"  [kept    ] {rel} (内容が生成規則と一致しないため残しました。不要なら --force)")
                 continue
             if not safe and args.force:
-                backup = store.backup_file(config_dir, rel)
-                if backup:
-                    print(f"  [backup  ] {rel} -> {backup}")
+                if args.dry_run:
+                    print(f"  [backup  ] {rel} (dry-run: バックアップ予定)")
+                else:
+                    backup = store.backup_file(config_dir, rel)
+                    if backup:
+                        print(f"  [backup  ] {rel} -> {backup}")
             if args.dry_run:
                 print(f"  [removed ] {rel} (dry-run)")
             else:
