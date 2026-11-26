@@ -11,6 +11,7 @@
 import type { Plugin as PluginTypes } from "@opencode/plugin"
 import { Error as ToolError } from "@opencode/plugin/promise/tool"
 import {
+  canAccountUsageEvent,
   consumeEvents,
   failureIdentity,
   isInScope,
@@ -91,7 +92,7 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       sessions,
       async (sessionID) => {
         const record = await getSession(sessionID)
-        return record ? normalizeSessionRecord(record) : undefined
+        return record ?? undefined
       },
       async (sessionID) => {
         if (latched) await interruptOne(sessionID)
@@ -199,9 +200,14 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
 
     // v2.4.2 event domain is an AsyncIterable, not a generic `event` hook.
     const handleEvent = async (row: AnyRecord) => {
-      if (row.type === "session.usage.updated" || row.type === "session.step.ended"
-          || row.type === "session.step.failed") {
+      if (row.type === "session.usage.updated" || row.type === "session.step.ended") {
         await countUsageEvent(row)
+      } else if (row.type === "session.step.failed") {
+        // Failed steps may omit cost/token metrics; they are not tool-call failures
+        // and incomplete usage must not latch the entire run. Missing spend is an
+        // explicit accounting limitation of this monitoring PoC.
+        const p = row.properties ?? {}
+        if (canAccountUsageEvent(row)) await countUsageEvent(row)
       } else if (row.type === "session.tool.failed") {
         const p = row.properties ?? {}
         if (typeof p.sessionID !== "string") throw new Error("tool failure event is missing sessionID")

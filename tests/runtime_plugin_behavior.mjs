@@ -1,5 +1,6 @@
 import assert from "node:assert/strict"
 import {
+  canAccountUsageEvent,
   consumeEvents,
   failureIdentity,
   isInScope,
@@ -33,6 +34,16 @@ const resolved = await resolveSessionScope(
 assert.equal(resolved, true)
 assert.deepEqual(fetched, ["middle"])
 assert.equal(partiallyKnown.get("middle"), "root")
+await assert.rejects(
+  resolveSessionScope(
+    "requested",
+    roots,
+    new Map(),
+    async () => ({ id: "different", parentID: "root" }),
+    async () => {},
+  ),
+  /identity mismatch/,
+)
 
 // Hook and event both identify a failure by the OpenCode tool-call ID.
 assert.equal(failureIdentity("root", "call-1"), failureIdentity("root", "call-1"))
@@ -53,6 +64,10 @@ assert.throws(() => normalizeUsageEvent({
   type: "session.step.failed",
   properties: { sessionID: "root", assistantMessageID: "message-1", error: { name: "Failure" } },
 }), /incomplete/)
+assert.equal(canAccountUsageEvent({
+  type: "session.step.failed",
+  properties: { sessionID: "root", assistantMessageID: "message-1", error: { name: "Failure" } },
+}), false)
 
 const handled = []
 const errors = []

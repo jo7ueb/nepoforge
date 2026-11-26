@@ -37,6 +37,9 @@ export async function resolveSessionScope(id, roots, sessions, loadSession, onSc
       const row = await loadSession(current)
       if (!row) return undefined
       const session = normalizeSessionRecord(row)
+      if (session.id !== current) {
+        throw new Error("session lookup identity mismatch")
+      }
       sessions.set(session.id, session.parentID)
     }
     const parentID = sessions.get(current)
@@ -73,6 +76,15 @@ export function normalizeUsageEvent(event) {
     assistantMessageID: payload.assistantMessageID,
     costUSD: payload.cost,
     tokens: tokenParts.reduce((total, count) => total + count, 0),
+  }
+}
+
+export function canAccountUsageEvent(event) {
+  try {
+    normalizeUsageEvent(event)
+    return true
+  } catch {
+    return false
   }
 }
 

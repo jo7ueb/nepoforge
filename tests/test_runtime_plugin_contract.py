@@ -6,12 +6,14 @@ import unittest
 
 
 PLUGIN = Path(__file__).parents[1] / "nepoforge/data/plugins/runtime-guard.ts"
+CORE = Path(__file__).parents[1] / "nepoforge/data/plugins/runtime-guard-core.mjs"
 
 
 class RuntimePluginContract(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.source = PLUGIN.read_text(encoding="utf-8")
+        cls.core_source = CORE.read_text(encoding="utf-8")
 
     def test_v242_plugin_setup_and_single_object_hooks(self):
         self.assertIn('import type { Plugin as PluginTypes } from "@opencode/plugin"', self.source)
@@ -49,6 +51,12 @@ class RuntimePluginContract(unittest.TestCase):
         self.assertIn("const handleEventError = async", self.source)
         self.assertIn("sessionUsage.set(sessionID", self.source)
         self.assertIn("normalizeUsageEvent(evt)", self.source)
+        self.assertIn('row.type === "session.step.failed"', self.source)
+        step_failed = self.source.split('row.type === "session.step.failed"', 1)[1].split(
+            'row.type === "session.tool.failed"', 1
+        )[0]
+        self.assertIn("if (canAccountUsageEvent(row))", step_failed)
+        self.assertIn("session lookup identity mismatch", self.core_source)
         self.assertIn("stepUsage.set(`${sessionID}:${assistantMessageID}`", self.source)
         self.assertIn("if (cumulative) {", self.source)
         self.assertIn("costUSD += cumulative.costUSD", self.source)
