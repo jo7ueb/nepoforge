@@ -76,6 +76,75 @@ class DelegationRunTests(unittest.TestCase):
                          executors={"T1": "agent"}, resolutions={"T1": resolution},
                          primary_model="p/m")
 
+    def test_execution_failure_retry_preserves_cost_and_history(self):
+        task = PlannedTask("T", "explore")
+        resolution = ModelResolution(
+            "T", "agent", "explore", ModelRef("p", "m"), "explore", "default"
+        )
+
+        def attempt(number, session, started, ended, cost):
+            return {
+                "task_id": "T", "attempt": number, "session_id": session,
+                "started_ms": started, "ended_ms": ended, "model": "p/m",
+                "reserved_yen": 0, "spent_yen": cost,
+                "outcome": "failed", "failure_reason": "execution_failure",
+                "messages": [{
+                    "id": f"c{number}", "session_id": session,
+                    "parent_session_id": "parent", "created_ms": started,
+                    "agent": "explore", "model": {"providerID": "p", "id": "m"},
+                }],
+            }
+
+        def document(attempts, budget_error=False):
+            return {
+                "run_id": "r", "plan_sha256": "h", "started_ms": 1, "as_of_ms": 8,
+                "budget_error": budget_error,
+                "primary": {
+                    "session_id": "parent", "spent_yen": 3, "outcome": "accepted",
+                    "success": True, "ended_ms": 8,
+                    "messages": [{
+                        "id": "p1", "session_id": "parent", "created_ms": 2,
+                        "agent": "build", "model": {"providerID": "p", "id": "m"},
+                    }],
+                },
+                "attempts": attempts,
+            }
+
+        first = attempt(1, "child1", 2, 3, 1)
+        state = evaluate_run(
+            document([first]), run_id="r", plan_sha256="h", tasks=[task],
+            executors={"T": "agent"}, resolutions={"T": resolution},
+            primary_model="p/m", retry_limits={"T": 1},
+        )
+        self.assertEqual(state.retryable, {"T"})
+        self.assertEqual(state.spent_yen, Decimal("4"))
+        self.assertEqual(len(state.report["tasks"]), 1)
+
+        retry = attempt(2, "child2", 4, 5, 2)
+        state = evaluate_run(
+            document([first, retry]), run_id="r", plan_sha256="h", tasks=[task],
+            executors={"T": "agent"}, resolutions={"T": resolution},
+            primary_model="p/m", retry_limits={"T": 1},
+        )
+        self.assertEqual(state.spent_yen, Decimal("6"))
+        self.assertEqual([row["attempt"] for row in state.report["tasks"]], [1, 2])
+        self.assertEqual([row["cost_yen"] for row in state.report["tasks"]], ["1", "2"])
+        self.assertEqual(state.retryable, set())
+
+        stopped = evaluate_run(
+            document([first, retry], budget_error=True), run_id="r", plan_sha256="h",
+            tasks=[task], executors={"T": "agent"}, resolutions={"T": resolution},
+            primary_model="p/m", retry_limits={"T": 1},
+        )
+        self.assertEqual(stopped.report["tasks"], state.report["tasks"])
+        self.assertEqual(stopped.retryable, set())
+        with self.assertRaises(ValueError):
+            evaluate_run(
+                document([first, retry]), run_id="r", plan_sha256="h", tasks=[task],
+                executors={"T": "agent"}, resolutions={"T": resolution},
+                primary_model="p/m",
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
