@@ -43,6 +43,8 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 
 ### 3.0 タスク分解
 
+- 現在、runtime plugin の稼働を実行可能な probe/heartbeat で確認する仕組みはなく、プログラムによる稼働確認はできない。この確認手段が実装され、稼働を検証できるまで、有料 Primary/子タスクは起動せず停止する。プラグインファイルの存在やマニフェスト一致を稼働証拠として扱わず、別プロセスの event monitor の状態・停止実績を推測して報告しない。
+
 - 初回の要求理解と計画作成後、全作業を PLAN に宣言する。PLAN は `{schema_version:1, issue_ref, deliverables:[独立確認可能な成果物ID...], tasks:[...]}`。各 task は既存 TaskSpec に `executor: agent|tool|primary`、`stage: requirements|research|design|implementation|test|review|integration`、`deliverables` を加え、各成果物をちょうど一タスクに割り当てる。
 - strict 検証は `nepoforge plan validate PLAN --contract [--approved-exception TASK_ID] [--json]`。`tool` は `task_kind` が `test/ci-status/git/diagnostics` の決定的作業のみで、追跡ファイルを編集しない。`primary` は `{exception:{reason:inseparable|delegation_cost|human_approved,detail:...,scope:write_scopeと同一}}` が必要。`human_approved` は人間の承認を得たうえで、該当 TASK_ID の `--approved-exception` を strict validate と strict ready の両方に指定する。例外承認を他の task に流用しない。
 - PLAN の依存関係で要求理解→調査→設計→実装→テストの順を保つ。工程内の独立タスクおよび依存が受理済みのタスクは並列起動できる。工程全件を待つバリアは作らない。

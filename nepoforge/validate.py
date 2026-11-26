@@ -239,6 +239,18 @@ def check_commands() -> tuple[list[dict[str, str]], set[str]]:
     return problems, commands
 
 
+def check_plugins() -> list[dict[str, str]]:
+    """グローバル管理対象の runtime plugin が配布データに存在することを検査する。"""
+    problems: list[dict[str, str]] = []
+    for rel in store.USER_PLUGINS:
+        path = store.DATA_DIR / rel
+        if not path.is_file():
+            problems.append(problem("plugins", _rel(path), "managed plugin is missing"))
+        elif not path.read_text(encoding="utf-8").strip():
+            problems.append(problem("plugins", _rel(path), "managed plugin is empty"))
+    return problems
+
+
 def check_role_references(agent_models: dict[str, str], commands: set[str]) -> list[dict[str, str]]:
     """エージェント同士・コマンドとの参照 (役割名・コマンド名) が解決できることを検査する。
 
@@ -396,6 +408,7 @@ def collect_problems(data_dir: Path | None = None) -> list[dict[str, str]]:
     problems = [
         *agent_problems,
         *command_problems,
+        *check_plugins(),
         *check_role_references(agent_models, commands),
         *check_profiles(agent_models),
         *check_templates(),

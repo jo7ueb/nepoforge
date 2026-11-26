@@ -81,6 +81,19 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
         profile_name = manifest.get("profile") if manifest else "balanced"
     prof = profiles.load_profile(profile_name)
     expected = {rel: sha256_text(profiles.render(rel, prof)) for rel in USER_MANAGED_FILES}
+    symlinks = []
+    for rel in expected:
+        path = config_dir
+        for part in Path(rel).parts:
+            path = path / part
+            if path.is_symlink():
+                symlinks.append((rel, path))
+                break
+    if symlinks:
+        print("conflict: managed target or parent is a symlink; refusing to write:", file=sys.stderr)
+        for rel, path in symlinks:
+            print(f"  [symlink] {rel}: {path}", file=sys.stderr)
+        raise SystemExit(2)
     state = store.classify(config_dir, manifest, expected)
 
     conflicts = [rel for rel, kind in state.items() if kind == "conflict"]
@@ -419,7 +432,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         return 0
     if len(removed) == len(USER_MANAGED_FILES):
         store.manifest_path().unlink(missing_ok=True)
-        for d in ("agents", "commands"):
+        for d in ("agents", "commands", "plugins"):
             path = config_dir / d
             try:
                 next(path.iterdir())
