@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platformdirs
 import shutil
 import subprocess
 import sys
@@ -415,6 +414,19 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
     return 0
 
 
+_AUTH_LIST_TIMEOUT = 10
+
+
+def _one_line(value: object) -> str:
+    """値を先頭 1 行・200 文字に切り詰める (detail の肥大・漏えい防止)。"""
+    text = str(value)
+    lines = text.strip().splitlines()
+    line = lines[0] if lines else text.strip()
+    if len(line) > 200:
+        line = line[:200]
+    return line
+
+
 def _tool_version(name: str) -> str | None:
     exe = shutil.which(name)
     if exe is None:
@@ -424,6 +436,94 @@ def _tool_version(name: str) -> str | None:
     except (OSError, subprocess.TimeoutExpired):
         return "unknown"
     return (result.stdout or result.stderr).strip().splitlines()[0] if (result.stdout or result.stderr) else "unknown"
+
+
+def _run_opencode_auth_list() -> tuple[str, str]:
+    """`opencode auth list --format json` を実行する (読み取り専用・課金なし)。
+
+    戻り値: (状態, 補足)
+      ("ok", stdout)         rc=0 (stdout をそのまま返す。ログには出さない)
+      ("not-found", "")      opencode が PATH 上に無い (shutil.which が None)
+      ("timeout", "")        _AUTH_LIST_TIMEOUT 秒でタイムアウト
+      ("error", "理由")      OSError (プロセス起動失敗など)
+      ("failed", "stderr先頭行")  rc != 0
+    """
+    exe = shutil.which("opencode")
+    if exe is None:
+        return ("not-found", "")
+    try:
+        result = subprocess.run(
+            [exe, "auth", "list", "--format", "json"],
+            capture_output=True, text=True, timeout=_AUTH_LIST_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return ("timeout", "")
+    except OSError as exc:
+        return ("error", _one_line(exc))
+    if result.returncode != 0:
+        # stdout には触れない (rc 異常時の出力に想定外の内容が混じる場合の露出面を狭める)。
+        reason = (result.stderr or "").strip().splitlines()
+        return ("failed", _one_line(reason[0]) if reason else f"rc={result.returncode}")
+    return ("ok", result.stdout or "")
+
+
+def _fastmetal_in_auth_list(stdout: str) -> bool | None:
+    """auth list の stdout に fastmetal の登録があるかを判定する (純粋関数)。
+
+    戻り値: True (登録あり) / False (解釈成功・登録なし) / None (解釈不能)
+    """
+    try:
+        data = json.loads(stdout)
+    except ValueError:
+        return None
+    if not isinstance(data, list):
+        return None
+    for entry in data:
+        if not isinstance(entry, dict):
+            return None
+        ident = str(entry.get("id") or "").lower()
+        name = str(entry.get("name") or "").lower()
+        if ident == "fastmetal" or name == "fastmetal":
+            return True
+    return False
+
+
+def _fastmetal_auth_status() -> tuple[str, str]:
+    """FastMetal 認証の状態を (状態, detail) で返す。
+
+    状態: "env" / "stored" / "env+stored" / "missing" / "unknown"
+    """
+    env_set = bool(_tool_env_key())
+    state, extra = _run_opencode_auth_list()
+    if state == "ok":
+        found = _fastmetal_in_auth_list(extra)
+        cli = "stored" if found else ("missing" if found is False else "unknown")
+        cli_reason = ("unrecognized output from 'opencode auth list --format json'"
+                      if cli == "unknown" else "")
+    elif state == "not-found":
+        cli, cli_reason = "unknown", "opencode not found"
+    elif state == "timeout":
+        cli, cli_reason = "unknown", "'opencode auth list' timed out"
+    elif state == "failed":
+        cli, cli_reason = "unknown", f"'opencode auth list' failed: {extra}"
+    else:
+        cli, cli_reason = "unknown", f"'opencode auth list' error: {extra}"
+
+    if cli == "stored":
+        if env_set:
+            return ("env+stored", "FASTMETAL_API_KEY is set; also stored in opencode auth")
+        return ("stored", "fastmetal is stored in opencode auth")
+    if cli == "missing":
+        if env_set:
+            return ("env", "FASTMETAL_API_KEY is set (not stored in opencode auth)")
+        return ("missing",
+                "neither FASTMETAL_API_KEY nor stored fastmetal credential "
+                "(models will fail without credentials)")
+    if env_set:
+        return ("env", f"FASTMETAL_API_KEY is set (opencode auth unverifiable: {cli_reason})")
+    return ("unknown",
+            f"cannot verify fastmetal credential ({cli_reason}). "
+            "registration not confirmed — check with 'opencode auth list'")
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
@@ -450,12 +550,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             checks.append(("global opencode config parses", False, str(exc)))
             checks.append(("fastmetal provider defined", False, "config unreadable"))
 
-    has_env_key = bool(_tool_env_key())
-    auth_store = platformdirs.user_data_dir("opencode") + "/auth.json"
-    checks.append(
-        ("fastmetal credential hint", has_env_key or Path(auth_store).is_file(),
-         "FASTMETAL_API_KEY is set" if has_env_key else (f"auth store exists: {auth_store}" if Path(auth_store).is_file() else "neither FASTMETAL_API_KEY nor auth store found (models will fail without credentials)")),
-    )
+    state, detail = _fastmetal_auth_status()
+    # "missing" (env も保存済みも無い) のみ FAIL。確認不能 (unknown) は
+    # degraded として ok=True にし、理由を detail で明示する (設計メモ 0009 §3.2)。
+    checks.append(("fastmetal credential hint", state != "missing", detail))
 
     manifest = store.load_manifest(store.manifest_path())
     if manifest is None:
