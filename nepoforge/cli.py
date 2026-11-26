@@ -15,6 +15,7 @@ import json
 import shutil
 import subprocess
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from . import __version__, budget, jsonc, planning, profiles, resolver, store, derive
@@ -798,6 +799,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
             unresolved.append({"task_id": tid, "reason": res.reason})
 
     launch: list[str] = []
+    reservations: dict[str, float] = {}
     denied: list[dict] = []
     not_ready = [tid for tid in by_id if tid not in ready_ids]
     state = budget.BudgetState(
@@ -832,13 +834,15 @@ def cmd_plan(args: argparse.Namespace) -> int:
         d = budget.decide_launch(state, est, provider_budget_error=args.budget_error)
         if d.allowed:
             launch.append(tid)
+            reservations[tid] = d.estimated_cost_yen
+            state = replace(state, reserved_yen=state.reserved_yen + d.estimated_cost_yen)
         else:
             denied.append({"task_id": tid, "reason": d.reason})
-    # 予算で拒否されたタスクの予約は reserved に積まない (起動しないため)。
     result = {
         "profile": profile_name,
         "ready": ready_ids,
         "launch": launch,
+        "reservations_yen": reservations,
         "denied": denied,
         "not_ready": sorted(not_ready),
         "resolved": resolved,

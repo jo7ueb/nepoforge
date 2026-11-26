@@ -18,7 +18,8 @@ provider・OpenCode 側では支出の強制ができない (強制可能な制�
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from math import isfinite
 from typing import Mapping
 
 from .store import NepoforgeError
@@ -63,10 +64,10 @@ class LaunchEstimate:
     def __post_init__(self) -> None:
         for name in ("max_input_tokens", "max_output_tokens"):
             value = getattr(self, name)
-            if value < 0:
-                raise BudgetError(f"{name} must be >= 0")
-        if self.retries < 0:
-            raise BudgetError("retries must be >= 0")
+            if type(value) is not int or value < 0:
+                raise BudgetError(f"{name} must be a non-negative integer")
+        if type(self.retries) is not int or self.retries < 0:
+            raise BudgetError("retries must be a non-negative integer")
 
 
 @dataclass(frozen=True)
@@ -78,10 +79,12 @@ class BudgetState:
     reserved_yen: float = 0.0
 
     def __post_init__(self) -> None:
-        if self.limit_yen is not None and self.limit_yen < 0:
-            raise BudgetError("limit_yen must be >= 0")
-        if self.spent_yen < 0 or self.reserved_yen < 0:
-            raise BudgetError("spent_yen and reserved_yen must be >= 0")
+        for name in ("limit_yen", "spent_yen", "reserved_yen"):
+            value = getattr(self, name)
+            if name == "limit_yen" and value is None:
+                continue
+            if not isfinite(value) or value < 0:
+                raise BudgetError(f"{name} must be finite and >= 0")
 
 
 @dataclass(frozen=True)

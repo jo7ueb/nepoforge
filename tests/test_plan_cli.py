@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
-from nepoforge import cli
+from nepoforge import budget, cli
 
 from ._base import IsolatedEnv
 
@@ -59,6 +62,43 @@ class TestPlanReady(IsolatedEnv):
         # 予算ゲートに必要な既定見積り (200k in / 50k out / 再試行 1) で
         # economy プロファイル (japan-glm-5.3-flash) が許可される上限
         self.limit = 100.0
+
+    def _ready(self, tasks: list[dict], *args: str) -> dict:
+        plan = _write_plan(self.tmp, tasks)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli.main(["plan", "ready", plan, "--json", *args]), 0)
+        return json.loads(output.getvalue())
+
+    def test_reservations_accumulate_within_and_across_batches(self) -> None:
+        tasks = [
+            {
+                "task_id": f"T{i}", "role": "reviewer",
+                "max_input_tokens": 1000, "max_output_tokens": 0, "retries": 1,
+            }
+            for i in range(1, 4)
+        ]
+        with patch.dict(budget.PRICES, {model: (5000, 0) for model in budget.PRICES}):
+            first = self._ready(tasks, "--limit-yen", "20")
+            self.assertEqual(first["launch"], ["T1", "T2"])
+            self.assertEqual(first["reservations_yen"], {"T1": 10, "T2": 10})
+            self.assertEqual([d["task_id"] for d in first["denied"]], ["T3"])
+
+            # T1 の実績は 8 円。T2 は実行中で、T3 は再判定しても起動できない。
+            second = self._ready(
+                tasks, "--limit-yen", "20", "--accepted", "T1",
+                "--spent-yen", "8", "--running", "T2", "--reserved-yen", "10",
+            )
+            self.assertEqual(second["reservations_yen"], {})
+            self.assertEqual(second["launch"], [])
+            self.assertIn("28.0000", second["denied"][0]["reason"])
+
+            # T2 も 2 円で終了し、実績合計 10 円に精算したら T3 に枠が空く。
+            state = ("--limit-yen", "20", "--accepted", "T1,T2", "--spent-yen", "10")
+            self.assertEqual(self._ready(tasks, *state)["reservations_yen"], {"T3": 10})
+            stopped = self._ready(tasks, *state, "--budget-error")
+            self.assertEqual(stopped["reservations_yen"], {})
+            self.assertIn("already exceeded", stopped["denied"][0]["reason"])
 
     def _plan(self) -> str:
         return _write_plan(
