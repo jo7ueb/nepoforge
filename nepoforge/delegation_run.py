@@ -57,6 +57,62 @@ def _model_observation(message: dict, expected: ModelRef) -> tuple[bool, dict]:
     )
 
 
+def _runtime_report(guard: Any) -> dict[str, Any]:
+    """本文を含めず、RuntimeGuardの観測状態をJSON互換に複写する。"""
+    if guard is None:
+        return {}
+    sessions = []
+    snapshots = getattr(guard, "snapshots", {})
+    if isinstance(snapshots, dict):
+        for session_id, snapshot in sorted(snapshots.items()):
+            messages = getattr(snapshot, "messages", {})
+            sessions.append({
+                "session_id": str(session_id),
+                "message_count": len(messages) if isinstance(messages, dict) else None,
+                "input_tokens": getattr(snapshot, "input_tokens", None),
+                "output_tokens": getattr(snapshot, "output_tokens", None),
+                "reasoning_tokens": getattr(snapshot, "reasoning_tokens", None),
+                "cache_read_tokens": getattr(snapshot, "cache_read_tokens", None),
+                "cache_write_tokens": getattr(snapshot, "cache_write_tokens", None),
+                "last_observed_ms": getattr(snapshot, "last_observed_ms", None),
+                "spent_yen": _json_value(getattr(snapshot, "spent_yen", None)),
+                "reserved_yen": _json_value(getattr(snapshot, "reserved_yen", None)),
+            })
+    active = sorted(getattr(guard, "_active_sessions", set()))
+    requests = [{"session_id": sid, "reason": getattr(guard, "latch_reason", None)}
+                for sid in active] if getattr(guard, "is_latched", False) else []
+    observed_sessions = sum(
+        getattr(snapshot, "last_observed_ms", None) is not None
+        for snapshot in snapshots.values()
+    ) if isinstance(snapshots, dict) else 0
+    observation_status = (
+        "stopped" if getattr(guard, "is_latched", False) else
+        "unavailable" if not sessions else
+        "missing" if not observed_sessions else
+        "observed" if observed_sessions == len(sessions) else "partial"
+    )
+    return {
+        "guard_state": {
+            "latched": bool(getattr(guard, "is_latched", False)),
+            "stop_reason": getattr(guard, "latch_reason", None),
+            "limit_yen": _json_value(getattr(guard, "limit_yen", None)),
+            "spent_yen": _json_value(getattr(guard, "spent_yen", None)),
+            "reserved_yen": _json_value(getattr(guard, "reserved_yen", None)),
+        },
+        "sessions": sessions,
+        "stop_requests": requests,
+        "observation_status": observation_status,
+    }
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return None
+
+
 def _row_evidence_valid(tid, row, executors, resolutions, primary_verified=False):
     executor = executors.get(tid)
     if executor == "tool":
@@ -79,6 +135,7 @@ def evaluate_run(
     resolutions: dict[str, resolver.ModelResolution],
     primary_model: str | None,
     retry_limits: dict[str, int] | None = None,
+    runtime_guard: Any = None,
 ) -> RunState:
     if not isinstance(document, dict):
         raise ValueError("run document must be an object")
@@ -319,7 +376,7 @@ def evaluate_run(
             if a < d and c < b:
                 overlaps.append({"task_ids": [tid, other], "from_ms": max(a, c),
                                  "to_ms": min(b, d), "walltime_ms": max(0, min(b, d)-max(a, c))})
-    return RunState(accepted, running, failed, retryable, spent, reserved_total, budget_error, {
+    report = {
         "run_id": run_id, "plan_sha256": plan_sha256,
         "primary": {
             "session_id": parent_session, "model": primary_model,
@@ -341,7 +398,11 @@ def evaluate_run(
         "provider_budget_error": budget_error,
         "paid_launch_allowed": not unknown_spend and not budget_error,
         "evidence_trust": "normalized local observations are trusted; not tamper-proof",
-    })
+    }
+    runtime = _runtime_report(runtime_guard)
+    if runtime:
+        report["runtime"] = runtime
+    return RunState(accepted, running, failed, retryable, spent, reserved_total, budget_error, report)
 
 
 def _walltime_text(ms: int) -> str:
@@ -410,10 +471,14 @@ def summarize_report(report: dict) -> dict:
         }
 
     primary = report.get("primary") or {}
-    return {
+    summary = {
         "walltime_ms": walltime,
         "walltime_text": _walltime_text(walltime),
         "outcome": primary.get("outcome"),
         "cost": cost,
         "budget": budget_summary,
     }
+    runtime = report.get("runtime")
+    if isinstance(runtime, dict):
+        summary["runtime"] = runtime
+    return summary

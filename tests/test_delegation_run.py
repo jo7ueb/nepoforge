@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import unittest
+import json
 from decimal import Decimal
 
-from nepoforge.delegation_run import evaluate_run, summarize_report
+from nepoforge.delegation_run import _runtime_report, evaluate_run, summarize_report
 from nepoforge.planning import PlannedTask
 from nepoforge.profiles import ModelRef
 from nepoforge.resolver import ModelResolution
@@ -228,6 +229,37 @@ class DelegationRunTests(unittest.TestCase):
         self.assertEqual(get_summary(1000)["walltime_text"], "1秒")
         self.assertEqual(get_summary(61000)["walltime_text"], "1分1秒")
         self.assertEqual(get_summary(3661000)["walltime_text"], "1時間1分1秒")
+
+    def test_runtime_block_is_optional_and_summarized_without_message_bodies(self):
+        from nepoforge.runtime_guard import RuntimeGuard
+        guard = RuntimeGuard(Decimal("2"))
+        guard.register_session("child")
+        guard.snapshots["child"].last_observed_ms = 2
+        report = {
+            "walltime_ms": 10,
+            "primary": {"outcome": "running"},
+            "costs": {"total_spent_yen": None},
+            "runtime": _runtime_report(guard),
+        }
+        encoded = json.dumps(report)
+        self.assertNotIn("parts", encoded)
+        summary = summarize_report(report)
+        self.assertEqual(summary["runtime"]["observation_status"], "observed")
+        self.assertEqual(summary["runtime"]["sessions"][0]["spent_yen"], "0")
+        self.assertEqual(summary["runtime"]["guard_state"]["limit_yen"], "2")
+        self.assertNotIn("runtime", summarize_report({
+            "walltime_ms": 0, "primary": {}, "costs": {},
+        }))
+
+    def test_runtime_stop_reason_is_reported(self):
+        from nepoforge.runtime_guard import RuntimeGuard
+        guard = RuntimeGuard(Decimal("1"))
+        guard.register_session("s")
+        guard.observation_lost("monitor disconnected")
+        runtime = _runtime_report(guard)
+        self.assertEqual(runtime["guard_state"]["stop_reason"], "monitor disconnected")
+        self.assertEqual(runtime["observation_status"], "stopped")
+        self.assertEqual(runtime["stop_requests"][0]["session_id"], "s")
 
 
 if __name__ == "__main__":
