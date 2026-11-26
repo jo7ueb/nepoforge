@@ -163,9 +163,11 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
 
 ## 4. Model Resolver
 
-**#70 の適用規則（下記の当初案より優先）**: `responsibility` (`leaf` / `integration`)、`task_kind`、既存の複雑度・リスク・能力条件、`data_policy` を使う。高難度・高リスクだけでは末端を昇格させない。能力・文脈長・データ条件に要求があれば、情報なしは不適格。一致した規則がすべて不適格なら役割既定には戻さない。計画 JSON のモデル・推論設定指定による上書きは拒否し、直接 Resolver に渡す人間設定由来の明示指定も一致した規則を上書きできない。`primary_model` は起動前照合用の推奨値で、設定やセッションを変更しない。
+**#70 の適用規則（下記の当初案より優先）**: Data Policy はモデルプロファイルから独立し、[利用者がプロジェクト単位に承認](../../README.md#プロジェクトの-data-policy)する。未設定は `confidential`、タスクは厳格化のみ。`open` は学習・保持が不明でも可、`private` は学習不使用が必要、`confidential` はさらにゼロ保持が必要。ルートごとの根拠・確認日・独立した属性は `nepoforge/data/model-routes.json` に置く。提供元の承認済み `endpoint`・必要能力・文脈長・価格・予算は別に確認する。
 
-2026-11-26 の FastMetal 公開資料による判断: [GPT OSS 20B](https://fastmetal.jp/models/openai/gpt-oss-20b) と [120B](https://fastmetal.jp/models/openai/gpt-oss-120b) は学習不使用・保持未確認。通常の `no_training` には適格だが、ゼロ保持要件には使わない。[GLM Flash Japan](https://fastmetal.jp/models/z-ai/glm-5-3-flash-japan) のツール呼び出しと厳密な JSON スキーマ強制は区別し、後者は [GLM の実行ルートに関する比較記事](https://fastmetal.jp/blog/deepseek-v4-1-flash-vs-glm-5-3-flash) も踏まえ候補能力に登録しない。厳密なスキーマ出力・ゼロ保持を示す資料が揃っているのは同梱候補では [DeepSeek Flash 1017 Japan](https://fastmetal.jp/models/deepseek/japan-deepseek-v4-1-flash-1017) のみ。同国内版の割引は 2026-12-04 (日本時間) まで。終了後は現在単価が確認されるまで同ルートの起動判定を拒否する。
+ルーティングには `responsibility` (`leaf` / `integration`)、`task_kind`、既存の複雑度・リスク・能力条件を使う。高難度・高リスクだけでは末端を昇格させず、一致した規則がすべて不適格なら役割既定には戻さない。計画 JSON のモデル・推論設定の上書きは拒否する。`primary_model` は起動前照合用の推奨値。Primary・手動起動・委譲では選択モデルと提供元の実モデル ID、送信先を照合する。この照合は設定やセッションを変更せず、先に送信された入力や管理外の起動を保護しない。
+
+2026-11-26 の FastMetal 公開資料による判断: [GPT OSS 20B](https://fastmetal.jp/models/openai/gpt-oss-20b) と [120B](https://fastmetal.jp/models/openai/gpt-oss-120b) は学習不使用・保持未確認のため `open` / `private` では適格になり得るが、`confidential` では不適格。[GLM Flash Japan](https://fastmetal.jp/models/z-ai/glm-5-3-flash-japan) のツール呼び出しと厳密な JSON スキーマ強制は区別し、後者は [GLM の実行ルートに関する比較記事](https://fastmetal.jp/blog/deepseek-v4-1-flash-vs-glm-5-3-flash) も踏まえ候補能力に登録しない。厳密なスキーマ出力・ゼロ保持を示す資料が揃っているのは同梱候補では [DeepSeek Flash 1017 Japan](https://fastmetal.jp/models/deepseek/japan-deepseek-v4-1-flash-1017) のみ。同国内版の割引は 2026-12-04 (日本時間) まで。終了後は現在単価が確認されるまで同ルートの起動判定を拒否する。
 
 [推論制御の資料](https://fastmetal.jp/docs/api/reasoning) に基づき 20B は低強度、Gemma は思考オフ、国内上位モデルと 120B はプロバイダー既定。ルールの `max_output_tokens` は回答と推論を含む**タスク全体の予算見積り**を抑える。OpenCode の `limit.output` はモデルのリクエスト設定であり、セッション全体のトークン数、再試行や実支出は強制できない。`plan ready` は管理定義と見積りを確認し、実行時の有効設定・実行モデルは `/nfgo` が照合する。
 

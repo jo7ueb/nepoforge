@@ -53,7 +53,7 @@ Issue を起点に、次の順序で進める (#8):
 ### タスク計画とモデル選択 (#52・#70)
 
 - 品質要件を満たす範囲で、Primary を含めた総費用と完了時間を抑える。先に責務 (`leaf` / `integration`)・タスク種別・`complexity`・`risk`・必要な `capabilities` を決め、入力の限定や分割を検討する。末端は軽量モデルを既定とし、役割既定や `performance` を理由に高額化しない。上位判断には根拠を記録する。
-- Primary の推奨値は `nepoforge profile show` で参照し、実際に OpenCode が選択したモデルを `nepoforge profile check-primary --model <モデル>` で照合する。Nepoforge はセッションを切り替えない。
+- Data Policy はモデルプロファイルと別に扱う。利用者の承認なくプロジェクト宣言・ユーザーの承認ファイルを変更しない。Primary の初回送信前と委譲前に、実際のモデルと提供経路を確認する（`profile check-primary` / `profile check-route`）。Nepoforge はセッションを切り替えない。
 - `nepoforge plan ready --json` の選択モデル・起動先に従う。Coordinator の明示指定で上書きせず、別モデルの許可は人間がプロファイルに設定する。能力不足・派生定義の不一致・予算拒否では無断昇格やフォールバックをしない。
 - 総予算を事前に決め、起動や再試行の直前に実績と既に起動済みの予約を反映する。起動した分の予約のみ次の判定に持ち越し、終了時に実績へ精算する。
 
