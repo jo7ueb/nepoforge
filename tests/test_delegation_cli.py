@@ -193,6 +193,80 @@ class TestStrictDelegationCLI(IsolatedEnv):
             with redirect_stdout(io.StringIO()):
                 cli.main(["plan", "validate", str(path), "--contract"])
 
+    def report(self, plan: str, gate: str, *extra: str) -> dict:
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli.main([
+                "plan", "report", plan, "--contract", "--run-id", "r1",
+                "--gate", gate, *extra,
+            ]), 0)
+        return json.loads(output.getvalue())
+
+    def test_plan_report_shows_time_cost_and_budget(self) -> None:
+        plan, digest = self.plan([task("one", "test", "D1")])
+        gate = self.write_gate(digest, [
+            self.attempt("one", "ses-one", 110, 200),
+        ], spent_yen=5)
+        summary = self.report(plan, gate, "--limit-yen", "100", "--json")
+        self.assertEqual(summary["walltime_text"], "0秒")
+        self.assertEqual(summary["outcome"], "running")
+        self.assertEqual(summary["cost"]["state"], "estimated")
+        self.assertEqual(summary["cost"]["total"], "5")
+        self.assertEqual(summary["cost"]["primary"], "5")
+        self.assertEqual(summary["cost"]["children"], "0")
+        self.assertIn("価格基準日", summary["cost"]["basis"])
+        self.assertEqual(summary["budget"]["remaining_yen"], "95.0")
+        self.assertEqual(summary["budget"]["over"], False)
+
+        text = io.StringIO()
+        with redirect_stdout(text):
+            self.assertEqual(cli.main([
+                "plan", "report", plan, "--contract", "--run-id", "r1",
+                "--gate", gate, "--limit-yen", "100",
+            ]), 0)
+        rendered = text.getvalue()
+        self.assertIn("所要時間: 0秒", rendered)
+        self.assertIn("API費用: 約 5.00円（推定・税別", rendered)
+        self.assertIn("請求実額ではない", rendered)
+        self.assertIn("予算: 上限 約 100.00円 / 残り 95.00円", rendered)
+
+    def test_plan_report_marks_unknown_cost_without_zero(self) -> None:
+        plan, digest = self.plan([task("one", "test", "D1")])
+        # モデル証拠のない gate (親の messages が空) → 費用は unknown
+        gate_path = self.work / "gate-unknown.json"
+        gate_path.write_text(json.dumps({
+            "run_id": "r1", "plan_sha256": digest,
+            "started_ms": 100, "as_of_ms": 300,
+            "primary": {"session_id": "ses-parent", "outcome": "running",
+                        "spent_yen": 0, "reserved_yen": 0, "messages": []},
+            "attempts": [],
+            "budget_error": False,
+        }), encoding="utf-8")
+        summary = self.report(plan, str(gate_path), "--limit-yen", "10", "--json")
+        self.assertEqual(summary["cost"]["state"], "unknown")
+        self.assertEqual(summary["cost"]["total"], "unknown")
+        self.assertEqual(summary["cost"]["reason"], "primary model/cost evidence unavailable")
+        self.assertEqual(summary["budget"]["remaining_yen"], "unknown")
+
+        text = io.StringIO()
+        with redirect_stdout(text):
+            self.assertEqual(cli.main([
+                "plan", "report", plan, "--contract", "--run-id", "r1",
+                "--gate", str(gate_path), "--limit-yen", "10",
+            ]), 0)
+        self.assertIn("API費用: 不明（理由:", text.getvalue())
+        self.assertNotIn("API費用: 約 0", text.getvalue())
+
+    def test_plan_report_requires_contract_and_budget_overline(self) -> None:
+        plan, digest = self.plan([task("one", "test", "D1")])
+        gate = self.write_gate(digest, [self.attempt("one", "ses-one", 110, 200)], spent_yen=5)
+        with self.assertRaises(SystemExit):
+            with redirect_stdout(io.StringIO()):
+                cli.main(["plan", "report", plan, "--run-id", "r1", "--gate", gate])
+        summary = self.report(plan, gate, "--limit-yen", "1", "--json")
+        self.assertEqual(summary["budget"]["over"], True)
+        self.assertEqual(summary["budget"]["remaining_yen"], "-4.0")
+
     def test_tool_dependencies_and_verified_agent_model_unlock_in_order(self) -> None:
         tasks = [
             task("validate", "implementation", "D1", role="implementer", executor="agent",

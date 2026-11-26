@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import unittest
 from decimal import Decimal
 
-from nepoforge.delegation_run import evaluate_run
+from nepoforge.delegation_run import evaluate_run, summarize_report
 from nepoforge.planning import PlannedTask
 from nepoforge.profiles import ModelRef
 from nepoforge.resolver import ModelResolution
@@ -24,8 +26,8 @@ class DelegationRunTests(unittest.TestCase):
                 "task_id": "T1", "attempt": 1, "session_id": "child", "started_ms": 2,
                 "ended_ms": 3, "model": "p/m", "reserved_yen": 1, "spent_yen": 2,
                 "outcome": "accepted",
-                "messages": [{"id": "c1", "session_id": "child", "created_ms": 2, "parent_session_id": "parent",
-                              "agent": "explore",
+                "messages": [{"id": "c1", "session_id": "child", "parent_session_id": "parent",
+                              "created_ms": 2, "agent": "explore",
                               "model": {"providerID": "p", "id": "m"}}],
             }],
         }
@@ -51,7 +53,7 @@ class DelegationRunTests(unittest.TestCase):
         doc = {"run_id": "r", "plan_sha256": "wrong"}
         with self.assertRaises(ValueError):
             evaluate_run(doc, run_id="r", plan_sha256="h", tasks=[],
-                          executors={}, resolutions={}, primary_model=None)
+                         executors={}, resolutions={}, primary_model=None)
 
     def test_attempt_message_must_be_inside_attempt_and_binding(self):
         task = PlannedTask("T1", "explore")
@@ -65,11 +67,12 @@ class DelegationRunTests(unittest.TestCase):
                         "messages": [{"id": "p", "session_id": "parent", "created_ms": 1,
                                       "agent": "build", "model": {"providerID": "p", "id": "m"}}]},
             "attempts": [{"task_id": "T1", "attempt": 1, "session_id": "child",
-                          "started_ms": 2, "ended_ms": 4, "model": "p/m", "outcome": "accepted",
-                          "spent_yen": 1, "messages": [{
-                              "id": "c", "session_id": "child", "parent_session_id": "parent",
-                              "created_ms": 1, "agent": "explore",
-                              "model": {"providerID": "p", "id": "m"}}]}],
+                           "started_ms": 2, "ended_ms": 4, "model": "p/m", "outcome": "accepted",
+                           "spent_yen": 1, "messages": [{
+                               "id": "c", "session_id": "child", "parent_session_id": "parent",
+                               "created_ms": 1, "agent": "explore",
+                               "model": {"providerID": "p", "id": "m"}}],
+                         }],
         }
         with self.assertRaises(ValueError):
             evaluate_run(doc, run_id="r", plan_sha256="h", tasks=[task],
@@ -144,6 +147,87 @@ class DelegationRunTests(unittest.TestCase):
                 executors={"T": "agent"}, resolutions={"T": resolution},
                 primary_model="p/m",
             )
+
+    def test_summarize_report_normal(self):
+        report = {
+            "walltime_ms": 154000,
+            "primary": {"outcome": "accepted"},
+            "costs": {
+                "total_spent_yen": "3.42",
+                "primary_spent_yen": "1.20",
+                "children_spent_yen": "2.22",
+                "reserved_yen": "1.58"
+            },
+            "budget": {"limit_yen": "5.00"},
+            "unknown_cost": False,
+            "unknown_reason": None,
+            "unknown_spent_yen": False,
+            "unknown_reserved_yen": False,
+        }
+        summary = summarize_report(report)
+        self.assertEqual(summary["walltime_text"], "2分34秒")
+        self.assertEqual(summary["outcome"], "accepted")
+        self.assertEqual(summary["cost"]["total"], "3.42")
+        self.assertEqual(summary["cost"]["primary"], "1.20")
+        self.assertEqual(summary["cost"]["children"], "2.22")
+        self.assertEqual(summary["cost"]["state"], "estimated")
+        self.assertEqual(summary["budget"]["remaining_yen"], "0.00")
+        self.assertEqual(summary["budget"]["over"], False)
+
+    def test_summarize_report_unknown_cost(self):
+        report = {
+            "walltime_ms": 1000,
+            "primary": {"outcome": "failed"},
+            "costs": {
+                "total_spent_yen": None,
+                "primary_spent_yen": "1.00",
+                "children_spent_yen": None,
+                "reserved_yen": None
+            },
+            "budget": {"limit_yen": "10.00"},
+            "unknown_cost": True,
+            "unknown_reason": "primary model unavailable",
+            "unknown_spent_yen": True,
+            "unknown_reserved_yen": True,
+        }
+        summary = summarize_report(report)
+        self.assertEqual(summary["cost"]["total"], "unknown")
+        self.assertEqual(summary["cost"]["reason"], "primary model unavailable")
+        self.assertEqual(summary["cost"]["primary"], "1.00")
+        self.assertEqual(summary["cost"]["children"], "unknown")
+        self.assertEqual(summary["budget"]["remaining_yen"], "unknown")
+
+    def test_summarize_report_no_limit(self):
+        report = {
+            "walltime_ms": 1000,
+            "primary": {"outcome": "accepted"},
+            "costs": {
+                "total_spent_yen": "1.00",
+                "primary_spent_yen": "1.00",
+                "children_spent_yen": "0.00",
+                "reserved_yen": "0.00"
+            },
+            "budget": {},  # No limit_yen
+            "unknown_cost": False,
+            "unknown_reason": None,
+            "unknown_spent_yen": False,
+            "unknown_reserved_yen": False,
+        }
+        summary = summarize_report(report)
+        self.assertIsNone(summary["budget"])
+
+    def test_summarize_report_walltime_formats(self):
+        def get_summary(ms):
+            return summarize_report({
+                "walltime_ms": ms,
+                "primary": {"outcome": "accepted"},
+                "costs": {"total_spent_yen": "0", "primary_spent_yen": "0", "children_spent_yen": "0", "reserved_yen": "0"},
+                "unknown_cost": False, "unknown_reason": None, "unknown_spent_yen": False, "unknown_reserved_yen": False,
+                "budget": {"limit_yen": "10"}
+            })
+        self.assertEqual(get_summary(1000)["walltime_text"], "1秒")
+        self.assertEqual(get_summary(61000)["walltime_text"], "1分1秒")
+        self.assertEqual(get_summary(3661000)["walltime_text"], "1時間1分1秒")
 
 
 if __name__ == "__main__":

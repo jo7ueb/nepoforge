@@ -10,6 +10,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from . import resolver
+from .budget import PRICE_BASIS
 from .planning import PlannedTask, conflicts, ready_tasks
 from .profiles import ModelRef, format_model, parse_model
 
@@ -341,3 +342,78 @@ def evaluate_run(
         "paid_launch_allowed": not unknown_spend and not budget_error,
         "evidence_trust": "normalized local observations are trusted; not tamper-proof",
     })
+
+
+def _walltime_text(ms: int) -> str:
+    """壁時計時間の表示 (例: 2分34秒)。"""
+    seconds = ms // 1000
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    parts = []
+    if hours:
+        parts.append(f"{hours}時間")
+    if minutes:
+        parts.append(f"{minutes}分")
+    if secs or not parts:
+        parts.append(f"{secs}秒")
+    return "".join(parts)
+
+
+def summarize_report(report: dict) -> dict:
+    """run_report を最終報告用の要約に変換する (#12)。
+
+    正常・停止・失敗のすべての終了状態で使える。費用不明を 0 円と偽らず
+    "unknown" で示す。金額は gate 申告と単価表に基づく推定であり、
+    請求実額ではない (価格基準日は budget.PRICE_BASIS)。
+    """
+    if not isinstance(report, dict):
+        raise ValueError("run report must be an object")
+    walltime = report.get("walltime_ms")
+    if type(walltime) is not int or walltime < 0:
+        raise ValueError("invalid walltime_ms")
+    costs = report.get("costs") or {}
+    if not isinstance(costs, dict):
+        raise ValueError("invalid costs block")
+
+    def label(value: Any) -> str:
+        money = _money(value)
+        return "unknown" if money is None else str(money)
+
+    total_unknown = costs.get("total_spent_yen") is None
+    cost = {
+        "state": "unknown" if total_unknown else "estimated",
+        "total": label(costs.get("total_spent_yen")),
+        "primary": label(costs.get("primary_spent_yen")),
+        "children": label(costs.get("children_spent_yen")),
+        "reserved": label(costs.get("reserved_yen")),
+        "reason": report.get("unknown_reason") if total_unknown else None,
+        "basis": f"推定・税別・価格基準日 {PRICE_BASIS}・請求実額ではない",
+    }
+
+    budget_block = report.get("budget")
+    budget_summary = None
+    if isinstance(budget_block, dict) and budget_block.get("limit_yen") is not None:
+        limit = _money(budget_block.get("limit_yen"))
+        spent = _money(costs.get("total_spent_yen"))
+        reserved = _money(costs.get("reserved_yen"))
+        if limit is None or spent is None or reserved is None:
+            remaining = "unknown"
+            over = None
+        else:
+            rest = limit - spent - reserved
+            remaining = str(rest)
+            over = rest < 0
+        budget_summary = {
+            "limit_yen": str(limit),
+            "remaining_yen": remaining,
+            "over": over,
+        }
+
+    primary = report.get("primary") or {}
+    return {
+        "walltime_ms": walltime,
+        "walltime_text": _walltime_text(walltime),
+        "outcome": primary.get("outcome"),
+        "cost": cost,
+        "budget": budget_summary,
+    }
