@@ -9,10 +9,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
 import re
 import subprocess
 import sys
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from nepoforge import cli, jsonc, store
@@ -105,8 +107,9 @@ class TestLifecycle(IsolatedEnv):
         # 環境依存になる。個別のチェック行を検証する)
         self.cd(repo1)
         stdout = io.StringIO()
-        with contextlib.redirect_stdout(stdout):
-            rc = cli.main(["doctor"])
+        with unittest.mock.patch.object(cli, "_run_opencode_auth_list", return_value=("ok", "[]")):
+            with contextlib.redirect_stdout(stdout):
+                rc = cli.main(["doctor"])
         out = stdout.getvalue()
         self.assertIn("[ok  ] opencode on PATH", out)
         self.assertIn("[ok  ] nepoforge installed", out)
@@ -344,6 +347,247 @@ class TestProvider(IsolatedEnv):
             cli.main(["init", "--provider", "fastmetal"])
         self.assertEqual(cm.exception.code, 2)
         self.assertEqual(config.read_text(), "{broken")
+
+
+class TestDoctorFastmetalAuth(IsolatedEnv):
+    """doctor の FastMetal 認証判定 (#68 / 設計メモ 0009)。"""
+
+    T2_JSON = (
+        '[{"id": "fastmetal", "name": "FastMetal", '
+        '"connections": [{"type": "credential", "id": "cred_DO_NOT_LEAK", '
+        '"label": "FastMetal", "method": "key"}]}]'
+    )
+
+    def _doctor_json(self, run_return):
+        """mock で _run_opencode_auth_list を差し替えて doctor --json を実行し、
+        fastmetal credential hint の check 要素を返す。"""
+        import contextlib
+        import io
+
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=run_return
+        ):
+            with contextlib.redirect_stdout(stdout):
+                cli.main(["doctor", "--json"])
+        text = stdout.getvalue()
+        lines = text.splitlines()
+        idx = next(i for i, ln in enumerate(lines) if ln.strip() == "[")
+        data = json.loads("\n".join(lines[idx:]))
+        for item in data:
+            if item["check"] == "fastmetal credential hint":
+                return item
+        raise AssertionError("fastmetal credential hint check not found")
+
+    def test_stored_fastmetal_ok(self) -> None:
+        item = self._doctor_json(("ok", self.T2_JSON))
+        self.assertTrue(item["ok"])
+        self.assertIn("stored in opencode auth", item["detail"])
+        # state 判定は _fastmetal_auth_status でも確認
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", self.T2_JSON)
+        ):
+            state, detail = cli._fastmetal_auth_status()
+        self.assertEqual(state, "stored")
+
+    def test_name_fallback_matches(self) -> None:
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", '[{"name": "FastMetal"}]')
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "stored")
+
+    def test_openai_only_is_missing(self) -> None:
+        stdout_json = (
+            '[{"id": "openai", "name": "OpenAI", '
+            '"connections": [{"type": "credential", "id": "cred_x", "label": "OpenAI", "method": "key"}]}]'
+        )
+        item = self._doctor_json(("ok", stdout_json))
+        self.assertFalse(item["ok"])
+        self.assertIn("neither", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", stdout_json)
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "missing")
+
+    def test_empty_list_is_missing(self) -> None:
+        item = self._doctor_json(("ok", "[]"))
+        self.assertFalse(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", "[]")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "missing")
+
+    def test_env_only_ok_even_if_cli_missing(self) -> None:
+        os.environ["FASTMETAL_API_KEY"] = "nf-test-dummy-key"
+        self.addCleanup(os.environ.pop, "FASTMETAL_API_KEY", None)
+        item = self._doctor_json(("ok", "[]"))
+        self.assertTrue(item["ok"])
+        self.assertIn("FASTMETAL_API_KEY is set", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", "[]")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "env")
+
+    def test_env_and_stored(self) -> None:
+        os.environ["FASTMETAL_API_KEY"] = "nf-test-dummy-key"
+        self.addCleanup(os.environ.pop, "FASTMETAL_API_KEY", None)
+        item = self._doctor_json(("ok", self.T2_JSON))
+        self.assertTrue(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", self.T2_JSON)
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "env+stored")
+
+    def test_env_with_unverifiable_cli(self) -> None:
+        os.environ["FASTMETAL_API_KEY"] = "nf-test-dummy-key"
+        self.addCleanup(os.environ.pop, "FASTMETAL_API_KEY", None)
+        item = self._doctor_json(("failed", "boom"))
+        self.assertTrue(item["ok"])
+        self.assertIn("unverifiable", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("failed", "boom")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "env")
+
+    def test_cli_not_found_is_unknown_not_missing(self) -> None:
+        item = self._doctor_json(("not-found", ""))
+        self.assertTrue(item["ok"])
+        self.assertIn("cannot verify", item["detail"])
+        self.assertIn("opencode not found", item["detail"])
+        self.assertNotIn("neither", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("not-found", "")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    def test_cli_rc_nonzero_is_unknown(self) -> None:
+        item = self._doctor_json(("failed", "boom: something"))
+        self.assertTrue(item["ok"])
+        self.assertIn("boom", item["detail"])
+        self.assertNotIn("neither", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("failed", "boom: something")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    def test_cli_timeout_is_unknown(self) -> None:
+        item = self._doctor_json(("timeout", ""))
+        self.assertTrue(item["ok"])
+        self.assertIn("timed out", item["detail"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("timeout", "")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    def test_non_json_output_is_unknown(self) -> None:
+        item = self._doctor_json(("ok", "FastMetal  FastMetal  stored"))
+        self.assertTrue(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", "FastMetal  FastMetal  stored")
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    def test_json_object_is_unknown(self) -> None:
+        item = self._doctor_json(("ok", '{"fastmetal": {}}'))
+        self.assertTrue(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", '{"fastmetal": {}}')
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    def test_non_dict_element_is_unknown(self) -> None:
+        item = self._doctor_json(("ok", '["fastmetal"]'))
+        self.assertTrue(item["ok"])
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", '["fastmetal"]')
+        ):
+            state, _ = cli._fastmetal_auth_status()
+        self.assertEqual(state, "unknown")
+
+    # _run_opencode_auth_list (実行層) のテスト
+    def test_runner_argv_and_mapping(self) -> None:
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=0, stdout="[]", stderr=""
+        )
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch("nepoforge.cli.subprocess.run", return_value=completed) as run:
+            state, out = cli._run_opencode_auth_list()
+        self.assertEqual(state, "ok")
+        self.assertEqual(out, "[]")
+        run.assert_called_once()
+        args, kwargs = run.call_args
+        self.assertEqual(args[0], ["/fake/opencode", "auth", "list", "--format", "json"])
+        self.assertEqual(kwargs.get("timeout"), 10)
+        self.assertTrue(kwargs.get("capture_output"))
+        self.assertTrue(kwargs.get("text"))
+
+    def test_runner_not_found(self) -> None:
+        with unittest.mock.patch("shutil.which", return_value=None) as which, \
+             unittest.mock.patch("nepoforge.cli.subprocess.run") as run:
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result, ("not-found", ""))
+        run.assert_not_called()
+
+    def test_runner_rc_nonzero(self) -> None:
+        import subprocess
+
+        completed = subprocess.CompletedProcess(
+            args=[], returncode=1, stdout="", stderr="no auth"
+        )
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch("nepoforge.cli.subprocess.run", return_value=completed):
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result, ("failed", "no auth"))
+
+    def test_runner_timeout(self) -> None:
+        import subprocess
+
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch(
+                 "nepoforge.cli.subprocess.run",
+                 side_effect=subprocess.TimeoutExpired("opencode", 10),
+             ):
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result, ("timeout", ""))
+
+    def test_runner_oserror(self) -> None:
+        with unittest.mock.patch("shutil.which", return_value="/fake/opencode"), \
+             unittest.mock.patch(
+                 "nepoforge.cli.subprocess.run", side_effect=OSError("spawn failed")
+             ):
+            result = cli._run_opencode_auth_list()
+        self.assertEqual(result[0], "error")
+        self.assertIn("spawn failed", result[1])
+
+    def test_no_secret_values_in_output(self) -> None:
+        import contextlib
+        import io
+
+        # ダミー env 値が doctor 出力に漏れないこと + fixture の cred マーカーが出ないこと
+        os.environ["FASTMETAL_API_KEY"] = "nf-test-dummy-key"
+        self.addCleanup(os.environ.pop, "FASTMETAL_API_KEY", None)
+        stdout = io.StringIO()
+        with unittest.mock.patch.object(
+            cli, "_run_opencode_auth_list", return_value=("ok", self.T2_JSON)
+        ):
+            with contextlib.redirect_stdout(stdout):
+                cli.main(["doctor", "--json"])
+        out = stdout.getvalue()
+        self.assertNotIn("nf-test-dummy-key", out)
+        self.assertNotIn("cred_DO_NOT_LEAK", out)
 
 
 class TestCanonicalData(IsolatedEnv):
