@@ -99,6 +99,8 @@ description: 指定した Issue を調査→設計→実装→独立レビュー
 
 ### タスク計画の管理 (Coordinator 規則)
 
+- **機械判定 (`nepoforge plan` — 課金なし)**: 計画の検証は `nepoforge plan validate <計画JSON>`、ready 判定・モデル解決・予算ゲートは `nepoforge plan ready <計画JSON> --accepted ... --running ... --failed ... --limit-yen ...` で行う。起動可否を手作業で判断せず、この結果に従う。`--json` の出力 (`launch` / `denied` / `not_ready` / `resolved`) は委譲記録とステップ 4 の報告にそのまま使える。拒否理由は要約せず報告する。計画 JSON は `{"tasks": [{"task_id", "role", "depends_on", "write_scope", "executor", "model_request", ...}]}` 形式。
+
 - **task_id**: `T1`、`T2` の形式で計画内一意に採番する。OpenCode の報告は子セッションの sessionID 単位で届くため、起動時に task_id と sessionID を対応付けて管理する。
 - **起動前に拒否する計画**: permissions・送信先の指定を含む / expert・explore・reviewer で write_scope が空でない / depends_on が循環・自己参照・不明な task_id。いずれも起動せず計画を修正する。
 - **モデル**: 現行プロファイルの役割既定で解決する (委譲単位に任意のモデルを指定することはできない)。
@@ -109,7 +111,7 @@ description: 指定した Issue を調査→設計→実装→独立レビュー
 - **起動判定 (ready)**: 次の 4 条件をすべて満たしたタスクから起動する。
   1. depends_on のタスクがすべて受理済みである。
   2. write_scope が重複する running 中のタスクがない (同じ編集領域を同時に動かさない)。
-  3. 予算・時間の既定上限内である (未設定を無制限と解釈しない)。予算の判定は純粋関数 `nepoforge.budget.decide_launch` の規則 (設計メモ 0008) に従い、価格不明・上限未設定・予算不足・予算超過後の停止モードでは起動しない。
+  3. 予算・時間の既定上限内である (未設定を無制限と解釈しない)。予算の判定は `nepoforge plan ready` が `nepoforge.budget.decide_launch` の規則 (設計メモ 0008) に従って実施する。価格不明・上限未設定・予算不足・予算超過後の停止モードでは起動しない。
   4. 同時 running 数が並列上限内である。既定上限 10 であり、ユーザー承認済みの並列上限・予算・プロバイダー制約に従って調整する (プロファイルの `constraints.max_parallel` で設定し、`nepoforge profile show` で確認する)。未設定・未知を無制限と解釈せず、上限・予算を無断で引き上げない。
 - **起動順**: 依存が受理されたタスクから起動し、空き枠は ready なタスクに使う。工程単位で完了を一括待ちするバリアを置かない (編集競合・予算・並列上限の条件は維持する)。
 - **blocked**: 必須依存が失敗した後続タスクは起動しない。無関係なタスクは止めない。依存の再実行と受理後に起動判定へ戻す。依存を断念する場合は後続も取り消して報告する。

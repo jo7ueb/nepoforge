@@ -56,8 +56,12 @@
 
 ## 6. 接続境界
 
+- **CLI 接続 (実装済み)**: `nepoforge plan validate <計画JSON>` が計画を検証し、
+  `nepoforge plan ready <計画JSON>` が 計画検証 → Model Resolver (#52) による
+  モデル解決 → `planning.ready_tasks` による ready 判定 → `decide_launch` による
+  予算ゲート を順に適用し、`launch` / `denied` / `not_ready` / `resolved` を
+  返す (課金なし)。`/nfgo` の Coordinator はこの結果に従って委譲する。
 - `planning.ready_tasks` (設計メモ 0005・PR #62) が返す起動候補に対し、
-  Coordinator は **1 タスクごとに** `decide_launch` を通してから委譲する。
-- `/nfgo` の「起動判定 (ready)」規則 3 (予算・時間の既定上限内) の判定規則が本設計。
+  1 タスクごとに `decide_launch` を通してから委譲する。
 - 実行履歴の自動記録 (実行ごとの機械可読な記録) は #12 の範囲。
   本実装は実行せず、判定と理由の生成のみを行う。
