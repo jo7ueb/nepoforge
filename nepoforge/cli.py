@@ -19,7 +19,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive, validate
+from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive, validate, delegation_plan, delegation_run
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -787,7 +787,27 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
 
 def cmd_plan(args: argparse.Namespace) -> int:
     """タスク計画の検証・ready 判定・予算ゲート (課金なし)。設計メモ 0005 §4.4・0008。"""
+    strict = bool(getattr(args, "contract", False))
+    if strict and getattr(args, "public_strict_options", False):
+        raise NepoforgeError("strict contract options require --contract")
+    if strict and getattr(args, "retries", None) is not None:
+        raise NepoforgeError("--retries cannot override strict contract retries")
+    if getattr(args, "approved_exception", ()) and not strict:
+        raise NepoforgeError("--approved-exception requires --contract")
+    if strict:
+        try:
+            document = json.loads(Path(args.file).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            raise NepoforgeError(f"cannot read contract JSON: {args.file} ({exc})") from exc
+        digest = delegation_plan.validate_contract(
+            document, approved_exceptions=getattr(args, "approved_exception", ()) or ()
+        )
+    else:
+        document = None
+        digest = None
     tasks_raw = _read_plan_file(args.file)
+    if strict:
+        tasks_raw = document["tasks"]
     planned, extras = [], {}
     for raw in tasks_raw:
         task, ext = _plan_task_from_dict(raw)
@@ -795,35 +815,71 @@ def cmd_plan(args: argparse.Namespace) -> int:
         extras[task.task_id] = ext
 
     if args.plan_command == "validate":
-        planning.validate_plan(planned)
+        if not strict:
+            planning.validate_plan(planned)
         if args.json:
-            print(json.dumps({"valid": True, "tasks": len(planned)}, ensure_ascii=False))
+            output = {"valid": True, "tasks": len(planned)}
+            if strict:
+                output["plan_sha256"] = digest
+            print(json.dumps(output, ensure_ascii=False))
         else:
             print(f"plan is valid ({len(planned)} tasks)")
         return 0
 
     # ready: 計画検証 → モデル解決 → ready 判定 → 予算ゲート
-    planning.validate_plan(planned)
+    if strict and (not args.run_id or not args.gate):
+        raise NepoforgeError("strict ready requires --run-id and --gate")
+    if not strict:
+        planning.validate_plan(planned)
     manifest = store.load_manifest(store.manifest_path())
     profile_name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
     config = profiles.load_profile_config(profile_name)
     project_policy = data_policy.load_project_policy()
+    if strict and args.max_parallel is not None and args.max_parallel > config.constraints.max_parallel:
+        raise NepoforgeError("--max-parallel cannot exceed the profile limit in strict mode")
     max_parallel = args.max_parallel or config.constraints.max_parallel
 
-    accepted = set(filter(None, (args.accepted or "").split(","))) if args.accepted else set()
-    running = set(filter(None, (args.running or "").split(","))) if args.running else set()
-    failed = set(filter(None, (args.failed or "").split(","))) if args.failed else set()
-
-    ready_ids = planning.ready_tasks(
-        planned, accepted=accepted, running=running, failed=failed, max_parallel=max_parallel
-    )
+    run_report = None
+    unknown_run_cost = False
+    resolutions: dict[str, resolver.ModelResolution] = {}
+    if strict:
+        if any(getattr(args, key, None) is not None for key in ("accepted", "running", "failed", "spent_yen", "reserved_yen")) or getattr(args, "budget_error", False):
+            raise NepoforgeError("strict ready state must come only from --gate")
+    else:
+        if getattr(args, "approved_exception", ()) or getattr(args, "run_id", None) or getattr(args, "gate", None):
+            raise NepoforgeError("--approved-exception/--run-id/--gate require --contract")
+        accepted = set(filter(None, (args.accepted or "").split(","))) if args.accepted else set()
+        running = set(filter(None, (args.running or "").split(","))) if args.running else set()
+        failed = set(filter(None, (args.failed or "").split(","))) if args.failed else set()
     by_id = {t.task_id: t for t in planned}
 
     resolved: dict[str, str] = {}
-    resolutions: dict[str, resolver.ModelResolution] = {}
     unresolved: list[dict] = []
     for tid, ext in extras.items():
         executor = ext.get("executor", "agent")
+        if strict and executor == "tool":
+            continue
+        if strict and executor == "primary":
+            primary = config.primary_for(project_policy)
+            if primary is None:
+                unresolved.append({"task_id": tid, "reason": "profile has no Primary recommendation"})
+                continue
+            # Primary direct execution is an exception to delegation, not to task
+            # safety constraints. Refuse constraints that cannot be proven here.
+            if (ext.get("data_policy") or ext.get("domestic_only")
+                    or ext.get("capabilities") or ext.get("context_tokens")):
+                unresolved.append({
+                    "task_id": tid,
+                    "reason": "primary exception cannot verify task-specific model constraints",
+                })
+                continue
+            resolutions[tid] = resolver.ModelResolution(
+                task_id=tid, executor="primary", role=by_id[tid].role,
+                resolved_model=primary, binding="primary", reason="profile_primary",
+                data_policy=project_policy, status="selected",
+            )
+            resolved[tid] = profiles.format_model(primary)
+            continue
         request = ext.get("model_request")
         model_ref = profiles.parse_model(request) if request is not None else None
         res = resolver.resolve(
@@ -854,7 +910,47 @@ def cmd_plan(args: argparse.Namespace) -> int:
             # executor=tool の通常解決 (reason=tool, model=None) は未解決ではない
             unresolved.append({"task_id": tid, "reason": res.reason})
 
+    if strict:
+        try:
+            run_doc = json.loads(Path(args.gate).read_text(encoding="utf-8"))
+            run_state = delegation_run.evaluate_run(
+                run_doc, run_id=args.run_id, plan_sha256=digest, tasks=planned,
+                executors={tid: ext.get("executor", "agent") for tid, ext in extras.items()},
+                resolutions=resolutions,
+                retry_limits={tid: ext.get("retries", 0) for tid, ext in extras.items()},
+                primary_model=profiles.format_model(config.primary_for(project_policy))
+                if config.primary_for(project_policy) else None,
+            )
+        except (OSError, ValueError) as exc:
+            raise NepoforgeError(f"invalid run gate: {exc}") from exc
+        accepted, running, failed = run_state.accepted, run_state.running, run_state.failed
+        retryable = run_state.retryable
+        run_report = run_state.report
+        args.budget_error = run_state.provider_budget_error
+        unknown_run_cost = run_state.spent_yen is None or run_state.reserved_yen is None
+        args.spent_yen = run_state.spent_yen or Decimal(0)
+        args.reserved_yen = run_state.reserved_yen or Decimal(0)
+    else:
+        retryable = set()
+        args.spent_yen = args.spent_yen if args.spent_yen is not None else 0.0
+        args.reserved_yen = args.reserved_yen if args.reserved_yen is not None else 0.0
+    ready_ids = planning.ready_tasks(
+        planned, accepted=accepted, running=running,
+        failed=failed - retryable if strict else failed, max_parallel=max_parallel
+    )
     launch: list[str] = []
+    launch_details: list[dict] = []
+
+    def record_launch(tid: str) -> None:
+        launch.append(tid)
+        if strict:
+            launch_details.append({
+                "task_id": tid,
+                "executor": extras[tid].get("executor", "agent"),
+                "stage": next(t.get("stage") for t in document["tasks"] if t["task_id"] == tid),
+                "attempt": 2 if tid in retryable else 1,
+            })
+
     reservations: dict[str, float] = {}
     denied: list[dict] = []
     not_ready = [tid for tid in by_id if tid not in ready_ids]
@@ -874,7 +970,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
                     {"task_id": tid, "reason": unresolved_reason(unresolved, tid)}
                 )
             else:
-                launch.append(tid)
+                record_launch(tid)
+            continue
+        if unknown_run_cost:
+            denied.append({"task_id": tid, "reason": "run cost is unknown; paid launch denied"})
             continue
         if model is None:
             denied.append(
@@ -890,7 +989,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
             model=model,
             max_input_tokens=ext.get("max_input_tokens", args.est_input),
             max_output_tokens=output_estimate,
-            retries=ext.get("retries", args.retries),
+            retries=ext.get("retries", 0) if strict else ext.get(
+                "retries", args.retries if args.retries is not None else 1
+            ),
         )
         d = budget.decide_launch(state, est, provider_budget_error=args.budget_error)
         if not d.allowed:
@@ -899,11 +1000,11 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if output_limit is not None and est.max_output_tokens > output_limit:
             denied.append({"task_id": tid, "reason": f"output estimate exceeds task policy ({output_limit} tokens)"})
             continue
-        binding_problem = _plan_binding_problem(resolution, model)
+        binding_problem = None if strict and ext.get("executor") == "primary" else _plan_binding_problem(resolution, model)
         if binding_problem:
             denied.append({"task_id": tid, "reason": binding_problem})
             continue
-        launch.append(tid)
+        record_launch(tid)
         reservations[tid] = d.estimated_cost_yen
         reserved = Decimal(str(state.reserved_yen)) + Decimal(str(d.estimated_cost_yen))
         state = replace(state, reserved_yen=reserved)
@@ -929,11 +1030,33 @@ def cmd_plan(args: argparse.Namespace) -> int:
         },
         "unresolved": unresolved,
     }
+    if strict:
+        run_report = dict(run_report or {})
+        run_report["budget"] = {
+            "limit_yen": str(args.limit_yen) if args.limit_yen is not None else None,
+            "spent_yen": None if unknown_run_cost else str(args.spent_yen),
+            "reserved_yen": None if unknown_run_cost else str(args.reserved_yen),
+            "estimate_basis": "unknown" if unknown_run_cost else "profile price table and token limits",
+        }
+        result.update(
+            run_id=args.run_id,
+            plan_sha256=digest,
+            stages=list(dict.fromkeys(task.get("stage") for task in document["tasks"])),
+            run_report=run_report,
+            launch_details=launch_details,
+        )
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
     else:
         print(f"profile: {profile_name}")
         print(f"  launch:     {' '.join(launch) if launch else '(none)'}")
+        if strict and launch_details:
+            for detail in launch_details:
+                print(
+                    f"  launch detail: {detail['task_id']} "
+                    f"(attempt {detail['attempt']}, stage {detail['stage']}, "
+                    f"executor {detail['executor']})"
+                )
         for d in denied:
             print(f"  denied:     {d['task_id']} — {d['reason']}")
         if not_ready:
@@ -1390,14 +1513,22 @@ def build_parser() -> argparse.ArgumentParser:
     pready.add_argument("--accepted", help="受理済み task_id のカンマ区切り")
     pready.add_argument("--running", help="実行中 task_id のカンマ区切り")
     pready.add_argument("--failed", help="失敗 task_id のカンマ区切り (後続は blocked)")
+    for command_parser in (pvalidate, pready):
+        command_parser.add_argument("--contract", action="store_true", help="厳格な delegation contract として検証する")
+        command_parser.add_argument("--approved-exception", action="append", default=[], metavar="TASK_ID",
+                                    help="human_approved 例外への人間の承認入力 (繰返し可)")
+    pvalidate.set_defaults(public_strict_options=False)
     pready.add_argument("--max-parallel", type=int, help="並列上限 (既定: プロファイル値)")
     pready.add_argument("--est-input", type=int, default=200_000, help="見積りの既定入力トークン上限 (タスク単位で上書き可)")
     pready.add_argument("--est-output", type=int, help="推論込み出力の見積り (省略時はタスク別規則、規則なしは 50000)")
-    pready.add_argument("--retries", type=int, default=1, help="見積りに積む自動再試行回数 (既定 1)")
+    pready.add_argument("--retries", type=int, help="見積りに積む自動再試行回数 (既定 1)")
     pready.add_argument("--limit-yen", type=float, help="予算上限 (円)。未指定は未設定として起動を拒否する")
-    pready.add_argument("--spent-yen", type=float, default=0.0, help="実績費用 (円・推定含む)")
-    pready.add_argument("--reserved-yen", type=float, default=0.0, help="実行中タスクの予約額 (円)")
-    pready.add_argument("--budget-error", action="store_true", help="provider 予算超過後の停止モード (全起動を拒否)")
+    pready.add_argument("--spent-yen", type=float, default=None, help="実績費用 (円・推定含む)")
+    pready.add_argument("--reserved-yen", type=float, default=None, help="実行中タスクの予約額 (円)")
+    pready.add_argument("--budget-error", action="store_true", default=None, help="provider 予算超過後の停止モード (全起動を拒否)")
+    pready.add_argument("--run-id", help="gate snapshot の run ID (厳格モード必須)")
+    pready.add_argument("--gate", help="gate snapshot JSON (厳格モード必須)")
+    pready.set_defaults(public_strict_options=False)
     pready.add_argument("--json", action="store_true", help="JSON で出力する")
     pready.set_defaults(fn=cmd_plan)
 

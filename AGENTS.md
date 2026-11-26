@@ -69,13 +69,16 @@ Issue を起点に、次の順序で進める (#8):
 - 子の報告は最後の text 応答のみ。中間報告を完了と扱わない。
 - 実行失敗の自動再委譲は 1 回、レビュー修正後の再検証は 2 巡まで。超過時は人間に報告する。
 - 手順の詳細はワークフロー定義 (`/nfgo`) が定める。
+- 配布 `/nfgo` は strict plan contract を必ず使用する。CLI の legacy モードは既存利用者互換に限る。工程依存は維持し、同一工程内および依存解消済みタスクを並列化するが、工程全件バリアは設けない。
+- strict run では開始・再試行直前に最新 run snapshot を再判定し、OpenCode API 由来の親子 message/model 証拠を使う。モデルは選択値と観測後の実値を分け、未観測は unknown とし依存を充足させない。
 - 受入条件が明確な局所変更では専用の調査・設計タスクを省き、必要な実装・独立レビュー・テストに絞る。選んだ独立レビュー観点は同じ確定差分に対する別タスクとし、ready なものを予算と並列枠の範囲で並列起動する。小規模変更のレビューは原則 1 巡とし、重大な指摘の解消確認など必要な場合だけ、影響した観点を再検証する。
 
 ### タスク計画とモデル選択 (#52・#70)
 
 - 品質要件を満たす範囲で、Primary を含めた総費用と完了時間を抑える。先に責務 (`leaf` / `integration`)・タスク種別・`complexity`・`risk`・必要な `capabilities` を決め、入力の限定や分割を検討する。末端は軽量モデルを既定とし、役割既定や `performance` を理由に高額化しない。上位判断には根拠を記録する。
 - Data Policy はモデルプロファイルと別に扱う。利用者の承認なくプロジェクト宣言・ユーザーの承認ファイルを変更しない。Primary の初回送信前と委譲前に、実際のモデルと提供経路を確認する（`profile check-primary` / `profile check-route`）。Nepoforge はセッションを切り替えない。
-- `nepoforge plan ready --json` の選択モデル・起動先に従う。Coordinator の明示指定で上書きせず、別モデルの許可は人間がプロファイルに設定する。能力不足・派生定義の不一致・予算拒否では無断昇格やフォールバックをしない。
+- `/nfgo` は `nepoforge plan validate PLAN --contract [--approved-exception TASK_ID] [--json]` と `nepoforge plan ready PLAN --contract --run-id ID --gate GATE --limit-yen ... --json` を使用する。strict では `--accepted/--running/--failed/--spent-yen/--reserved-yen/--budget-error` の手入力は禁止。既存 legacy CLI は互換利用者向けに維持する。
+- `plan ready` の選択モデル・起動先に従う。Coordinator の明示指定で上書きせず、別モデルの許可は人間がプロファイルに設定する。能力不足・派生定義の不一致・予算/権限拒否では直接実装等へ迂回しない。
 - 総予算を事前に決め、起動や再試行の直前に実績と既に起動済みの予約を反映する。起動した分の予約のみ次の判定に持ち越し、終了時に実績へ精算する。
 
 ## PR ルール
