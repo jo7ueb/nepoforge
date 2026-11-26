@@ -151,7 +151,9 @@ nepoforge profile derive          # 派生定義 (agents/nf-<role>-<slug>.md) �
 
 変更は利用者が行います。リポジトリ直下の `.nepoforge.json` に `{"data_policy":"private"}` と宣言し、`$XDG_CONFIG_HOME/nepoforge/project-policies.json`（通常は `~/.config/nepoforge/project-policies.json`）に ` {"/絶対パス/リポジトリ":"private"}` と承認した値を記録します。リポジトリの宣言だけでは緩和できません。無効な値や承認との不一致は停止します。タスクには、実際に送る全コンテキストに応じて、これより厳しい値だけを指定できます。`open` でも認証情報・個人情報・第三者の秘密等を送る許可にはなりません。
 
-**最初の送信前に確認:** `nepoforge profile show` で推奨を確認し、OpenCode の UI またはセッション API で実際に選択したモデルを照合します。有効設定の `baseURL` と提供元へ送るモデル ID（`modelID` 上書きがなければ選択した ID）を確認し、`nepoforge profile check-primary --model <provider/model> --endpoint <baseURL> --upstream-model <ID>` を実行します。手動で子を起動するときは同じ引数の `profile check-route` を使います。承認済みルートの候補がない場合は停止します（例: `confidential` の economy は現在の推奨モデルでは通りません）。結果はローカル照合であり、OpenCode の別経路での直接起動や、開始済みセッションの初回送信を防げません。管理外セッション、送信後の設定変更、同じ OS 権限による変更を防ぐ境界ではありません。
+`confidential` では全プロファイルで、末端作業を GLM 4.7 Flash、ツール不要の定型抽出を Llama 3.2 3B に割り当てます。抽出にツールが必要なら GLM 4.7 Flash を使います。`economy` では `confidential` のとき、Primary の推奨と統合判断の割り当てが DeepSeek Flash Japan になります。
+
+**最初の送信前に確認:** `nepoforge profile show` で推奨を確認し、OpenCode の UI またはセッション API で実際に選択したモデルを照合します。有効設定の `baseURL` と提供元へ送るモデル ID（`modelID` 上書きがなければ選択した ID）を確認し、`nepoforge profile check-primary --model <provider/model> --endpoint <baseURL> --upstream-model <ID>` を実行します。手動で子を起動するときは同じ引数の `profile check-route` を使います。承認済みルートの候補がない場合は停止します。結果はローカル照合であり、OpenCode の別経路での直接起動や、開始済みセッションの初回送信を防げません。管理外セッション、送信後の設定変更、同じ OS 権限による変更を防ぐ境界ではありません。
 
 旧同梱プロファイルからは `nepoforge update --dry-run` で役割定義・派生定義の差分を確認できます。FastMetal の旧管理ブロックを使っている場合、`nepoforge init --provider fastmetal --dry-run` で OSS モデルと推論設定の追加差分を確認し、同じコマンドから `--dry-run` を外すとバックアップ付きで反映します。既存ブロックが利用者定義・改変済みの場合は配布テンプレートを参照し、必要なモデル設定を手動で追加してください。
 
