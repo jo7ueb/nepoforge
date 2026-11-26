@@ -56,7 +56,8 @@ class TestRuntimeIncidentFixture(unittest.TestCase):
         self.assertEqual(row["message_seq"], "5")
         self.assertEqual(cumulative.quantize(Decimal("0.0001")), Decimal("1.5802"))
         self.assertTrue(guard.is_latched)
-        self.assertFalse(guard.can_launch()[0])
+        self.assertFalse(guard.can_launch(Decimal("0"))[0])
+        self.assertIn("budget exceeded", guard.latch_reason or "")
 
     def test_t1_total_cost_and_repeat_failure_threshold(self):
         rows = []
@@ -80,7 +81,8 @@ class TestRuntimeIncidentFixture(unittest.TestCase):
         for _ in range(2):
             self.assertFalse(guard.record_failure("edit-oldstring-mismatch"))
         self.assertTrue(guard.record_failure("edit-oldstring-mismatch"))
-        self.assertFalse(guard.can_launch()[0])
+        self.assertFalse(guard.can_launch(Decimal("0"))[0])
+        self.assertIn("repeated failure threshold", guard.latch_reason or "")
         # read/tool の異なる動作は同じ fingerprint の失敗状態を解除しない。
         self.assertTrue(guard.is_latched)
 

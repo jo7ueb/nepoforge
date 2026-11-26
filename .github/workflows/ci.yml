@@ -41,6 +41,11 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
+      - name: Set up Node.js for plugin core behavior tests
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Install package and test dependencies
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip
@@ -70,6 +75,11 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Set up Node.js for deployed plugin dependency check
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
       - name: Build wheel and sdist
         run: |
           python -m pip install --disable-pip-version-check --upgrade pip build
@@ -93,6 +103,8 @@ jobs:
           mkdir -p "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
           venv/bin/python -m nepoforge init --dry-run
           venv/bin/python -m nepoforge init
+          test -f "$XDG_CONFIG_HOME/opencode/plugins/runtime-guard-core.mjs"
+          node --input-type=module -e "await import('file://' + process.env.XDG_CONFIG_HOME + '/opencode/plugins/runtime-guard-core.mjs')"
           venv/bin/python -m nepoforge status
           venv/bin/python -m nepoforge doctor || [ $? -eq 1 ]
           venv/bin/python -m nepoforge uninstall

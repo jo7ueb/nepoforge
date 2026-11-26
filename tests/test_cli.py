@@ -96,6 +96,8 @@ class TestLifecycle(IsolatedEnv):
         for agent in store.USER_AGENT_IDS:
             self.assertTrue((agents_dir / f"{agent}.md").is_file())
         self.assertTrue((store.opencode_dir() / "commands" / "nfgo.md").is_file())
+        for rel in store.USER_PLUGINS:
+            self.assertTrue((store.opencode_dir() / rel).is_file(), rel)
         manifest = store.load_manifest(store.manifest_path())
         self.assertEqual(manifest["kind"], "user")
         self.assertEqual(manifest["profile"], "balanced")
@@ -195,6 +197,8 @@ class TestLifecycle(IsolatedEnv):
         self.assertEqual(cli.main(["uninstall", "--projects"]), 0)
         self.assertFalse(store.manifest_path().is_file())
         self.assertFalse((store.opencode_dir() / "agents" / "architect.md").is_file())
+        for rel in store.USER_PLUGINS:
+            self.assertFalse((store.opencode_dir() / rel).exists(), rel)
         self.assertEqual(store.load_projects(), [])
 
     def test_init_dry_run_makes_no_changes(self) -> None:
@@ -220,6 +224,31 @@ class TestLifecycle(IsolatedEnv):
         self.assertEqual(cm.exception.code, 2)
         # 利用者のファイルは無傷
         self.assertEqual((target / "architect.md").read_text(), "user owns this\n")
+
+    def test_init_refuses_managed_target_symlink(self) -> None:
+        config = store.opencode_dir()
+        config.mkdir(parents=True)
+        outside = self.home / "outside-plugin.ts"
+        outside.write_text("user-owned\n", encoding="utf-8")
+        plugin = config / "plugins" / "runtime-guard.ts"
+        plugin.parent.mkdir()
+        plugin.symlink_to(outside)
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["init"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "user-owned\n")
+        self.assertTrue(plugin.is_symlink())
+
+    def test_init_refuses_symlinked_managed_parent(self) -> None:
+        config = store.opencode_dir()
+        config.mkdir(parents=True)
+        outside = self.home / "outside-plugins"
+        outside.mkdir()
+        (config / "plugins").symlink_to(outside, target_is_directory=True)
+        with self.assertRaises(SystemExit) as cm:
+            cli.main(["init"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertEqual(list(outside.iterdir()), [])
 
     def test_modified_managed_file_stops_without_force(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
@@ -775,6 +804,11 @@ class TestCanonicalData(IsolatedEnv):
             (store.opencode_dir() / rel).read_text(encoding="utf-8"),
             (store.DATA_DIR / rel).read_text(encoding="utf-8"),
         )
+        rel = "plugins/runtime-guard.ts"
+        self.assertEqual(
+            (store.opencode_dir() / rel).read_text(encoding="utf-8"),
+            (store.DATA_DIR / rel).read_text(encoding="utf-8"),
+        )
 
     def test_guardrail_retains_critical_denies(self) -> None:
         rules = jsonc.loads(cli.GUARDRAIL_TEMPLATE.read_text(encoding="utf-8"))["permissions"]
@@ -861,6 +895,11 @@ class TestWorkflowContract(unittest.TestCase):
         # 実装詳細 (報告タグ・モデル名・experimental 設定) を直書きしない
         for forbidden in ("<background-result>", "fastmetal/", "subagent_depth"):
             self.assertNotIn(forbidden, self.text)
+
+    def test_runtime_liveness_is_unavailable_and_fails_closed(self) -> None:
+        self.assertIn("プログラムによる稼働確認はできない", self.text)
+        self.assertIn("有料 Primary/子タスクは起動せず停止する", self.text)
+        self.assertIn("マニフェスト一致を稼働証拠として扱わず", self.text)
 
 
 if __name__ == "__main__":

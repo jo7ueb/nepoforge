@@ -19,7 +19,11 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive, validate, delegation_plan, delegation_run
+from . import (
+    __version__, budget, data_policy, jsonc, planning, profiles, resolver,
+    store, derive, validate, delegation_plan, delegation_run,
+    runtime_guard as runtime_guard_module,
+)
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -81,6 +85,19 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
         profile_name = manifest.get("profile") if manifest else "balanced"
     prof = profiles.load_profile(profile_name)
     expected = {rel: sha256_text(profiles.render(rel, prof)) for rel in USER_MANAGED_FILES}
+    symlinks = []
+    for rel in expected:
+        path = config_dir
+        for part in Path(rel).parts:
+            path = path / part
+            if path.is_symlink():
+                symlinks.append((rel, path))
+                break
+    if symlinks:
+        print("conflict: managed target or parent is a symlink; refusing to write:", file=sys.stderr)
+        for rel, path in symlinks:
+            print(f"  [symlink] {rel}: {path}", file=sys.stderr)
+        raise SystemExit(2)
     state = store.classify(config_dir, manifest, expected)
 
     conflicts = [rel for rel, kind in state.items() if kind == "conflict"]
@@ -419,7 +436,7 @@ def cmd_uninstall(args: argparse.Namespace) -> int:
         return 0
     if len(removed) == len(USER_MANAGED_FILES):
         store.manifest_path().unlink(missing_ok=True)
-        for d in ("agents", "commands"):
+        for d in ("agents", "commands", "plugins"):
             path = config_dir / d
             try:
                 next(path.iterdir())
@@ -844,6 +861,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
 
     run_report = None
     unknown_run_cost = False
+    runtime_guard_latched = False
     resolutions: dict[str, resolver.ModelResolution] = {}
     if strict:
         if any(getattr(args, key, None) is not None for key in ("accepted", "running", "failed", "spent_yen", "reserved_yen")) or getattr(args, "budget_error", False):
@@ -916,6 +934,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
     if strict:
         try:
             run_doc = json.loads(Path(args.gate).read_text(encoding="utf-8"))
+            runtime_guard = runtime_guard_module.RuntimeGuard(
+                Decimal(str(args.limit_yen)) if args.limit_yen is not None else None,
+                enforce_limit=args.plan_command != "report",
+            )
             run_state = delegation_run.evaluate_run(
                 run_doc, run_id=args.run_id, plan_sha256=digest, tasks=planned,
                 executors={tid: ext.get("executor", "agent") for tid, ext in extras.items()},
@@ -923,12 +945,14 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 retry_limits={tid: ext.get("retries", 0) for tid, ext in extras.items()},
                 primary_model=profiles.format_model(config.primary_for(project_policy))
                 if config.primary_for(project_policy) else None,
+                runtime_guard=runtime_guard,
             )
         except (OSError, ValueError) as exc:
             raise NepoforgeError(f"invalid run gate: {exc}") from exc
         accepted, running, failed = run_state.accepted, run_state.running, run_state.failed
         retryable = run_state.retryable
         run_report = run_state.report
+        runtime_guard_latched = run_state.runtime_latched
         args.budget_error = run_state.provider_budget_error
         unknown_run_cost = run_state.spent_yen is None or run_state.reserved_yen is None
         args.spent_yen = run_state.spent_yen or Decimal(0)
@@ -986,6 +1010,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
             else:
                 record_launch(tid)
             continue
+        if runtime_guard_latched:
+            denied.append({
+                "task_id": tid,
+                "reason": f"runtime guard latched: {run_report.get('runtime', {}).get('guard_state', {}).get('stop_reason') or 'unknown'}",
+            })
+            continue
         if unknown_run_cost:
             denied.append({"task_id": tid, "reason": "run cost is unknown; paid launch denied"})
             continue
@@ -1018,6 +1048,13 @@ def cmd_plan(args: argparse.Namespace) -> int:
         if binding_problem:
             denied.append({"task_id": tid, "reason": binding_problem})
             continue
+        if strict:
+            guard_allowed, guard_reason = runtime_guard.reserve_launch(
+                Decimal(str(d.estimated_cost_yen))
+            )
+            if not guard_allowed:
+                denied.append({"task_id": tid, "reason": guard_reason})
+                continue
         record_launch(tid)
         reservations[tid] = d.estimated_cost_yen
         reserved = Decimal(str(state.reserved_yen)) + Decimal(str(d.estimated_cost_yen))
@@ -1046,6 +1083,18 @@ def cmd_plan(args: argparse.Namespace) -> int:
     }
     if strict:
         run_report = dict(run_report or {})
+        runtime_block = run_report.get("runtime")
+        if isinstance(runtime_block, dict):
+            guard_state = runtime_block.get("guard_state")
+            if isinstance(guard_state, dict):
+                guard_state["reserved_yen"] = str(runtime_guard.reserved_yen)
+                guard_state["latched"] = runtime_guard.is_latched
+                guard_state["stop_reason"] = runtime_guard.latch_reason
+                guard_state["accounting_complete"] = runtime_guard.accounting_complete
+            run_report["paid_launch_allowed"] = (
+                run_report.get("paid_launch_allowed", False)
+                and not runtime_guard.is_latched
+            )
         run_report["budget"] = _run_budget_block(
             args.limit_yen, unknown_run_cost, args.spent_yen, args.reserved_yen
         )

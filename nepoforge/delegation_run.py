@@ -25,6 +25,7 @@ class RunState:
     reserved_yen: Decimal | None
     provider_budget_error: bool
     report: dict[str, Any]
+    runtime_latched: bool = False
 
 
 def _money(value: Any) -> Decimal | None:
@@ -57,6 +58,76 @@ def _model_observation(message: dict, expected: ModelRef) -> tuple[bool, dict]:
     )
 
 
+def _runtime_report(guard: Any) -> dict[str, Any]:
+    """本文を含めず、RuntimeGuardの観測状態をJSON互換に複写する。"""
+    if guard is None:
+        return {}
+    sessions = []
+    snapshots = getattr(guard, "snapshots", {})
+    if isinstance(snapshots, dict):
+        for session_id, snapshot in sorted(snapshots.items()):
+            messages = getattr(snapshot, "messages", {})
+            sessions.append({
+                "session_id": str(session_id),
+                "message_count": len(messages) if isinstance(messages, dict) else None,
+                "input_tokens": getattr(snapshot, "input_tokens", None),
+                "output_tokens": getattr(snapshot, "output_tokens", None),
+                "reasoning_tokens": getattr(snapshot, "reasoning_tokens", None),
+                "cache_read_tokens": getattr(snapshot, "cache_read_tokens", None),
+                "cache_write_tokens": getattr(snapshot, "cache_write_tokens", None),
+                "last_observed_ms": getattr(snapshot, "last_observed_ms", None),
+                "spent_yen": _json_value(getattr(snapshot, "spent_yen", None)),
+                "reserved_yen": _json_value(getattr(snapshot, "reserved_yen", None)),
+            })
+    active = sorted(getattr(guard, "_active_sessions", set()))
+    candidates = ([{"session_id": sid, "reason": getattr(guard, "latch_reason", None)}
+                  for sid in active] if getattr(guard, "is_latched", False) else [])
+    observed_sessions = sum(
+        getattr(snapshot, "last_observed_ms", None) is not None
+        for snapshot in snapshots.values()
+    ) if isinstance(snapshots, dict) else 0
+    observation_status = (
+        "stopped" if getattr(guard, "is_latched", False) else
+        "unavailable" if not sessions else
+        "missing" if not observed_sessions else
+        "observed" if observed_sessions == len(sessions) else "partial"
+    )
+    return {
+        "guard_state": {
+            "latched": bool(getattr(guard, "is_latched", False)),
+            "stop_reason": getattr(guard, "latch_reason", None),
+            "accounting_complete": bool(getattr(guard, "accounting_complete", False)),
+            "limit_yen": _json_value(getattr(guard, "limit_yen", None)),
+            "spent_yen": _json_value(getattr(guard, "spent_yen", None)),
+            "reserved_yen": _json_value(getattr(guard, "reserved_yen", None)),
+        },
+        "sessions": sessions,
+        # RuntimeGuard does not retain dispatcher results. These are only
+        # sessions that may have been targeted by its latch, not call evidence.
+        "interrupt_observation": {
+            "adapter_status": "unknown",
+            "candidate_sessions": [
+                {
+                    **candidate,
+                    "request_status": getattr(guard, "interrupt_results", {}).get(
+                        candidate["session_id"], "unknown"
+                    ),
+                }
+                for candidate in candidates
+            ],
+        },
+        "observation_status": observation_status,
+    }
+
+
+def _json_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return None
+
+
 def _row_evidence_valid(tid, row, executors, resolutions, primary_verified=False):
     executor = executors.get(tid)
     if executor == "tool":
@@ -79,6 +150,7 @@ def evaluate_run(
     resolutions: dict[str, resolver.ModelResolution],
     primary_model: str | None,
     retry_limits: dict[str, int] | None = None,
+    runtime_guard: Any = None,
 ) -> RunState:
     if not isinstance(document, dict):
         raise ValueError("run document must be an object")
@@ -219,6 +291,55 @@ def evaluate_run(
             if tid != other and a < d and c < b and conflicts(task_by_id[tid], task_by_id[other]):
                 raise ValueError("overlapping write scopes")
 
+    if runtime_guard is not None:
+        runtime_guard.register_session(parent_session)
+        if primary.get("outcome") == "running" and parent_reserved is not None:
+            runtime_guard.register_reservation(parent_session, parent_reserved)
+        if not pmsgs:
+            runtime_guard.record_observation_failure("primary usage messages unavailable")
+        elif not runtime_guard.observe_api_messages(parent_session, pmsgs):
+            runtime_guard.record_observation_failure("primary usage accounting incomplete")
+        if budget_error:
+            runtime_guard.stop("provider budget error")
+        valid_fingerprints = {
+            "oldstring-mismatch", "permission-denied", "invalid-arguments",
+            "transport-error", "tool-error", "provider-budget-error",
+        }
+        for tid, rows in grouped.items():
+            for attempt in rows:
+                fingerprint = attempt.get("failure_fingerprint")
+                if fingerprint is None:
+                    continue
+                if fingerprint not in valid_fingerprints:
+                    runtime_guard.record_observation_failure("invalid failure fingerprint")
+                elif fingerprint == "provider-budget-error":
+                    budget_error = True
+                    runtime_guard.stop("provider budget error")
+                else:
+                    runtime_guard.record_failure(fingerprint)
+        for tid, rows in grouped.items():
+            if executors.get(tid) != "agent":
+                continue
+            for attempt in rows:
+                session_id = attempt["session_id"]
+                if session_id == parent_session:
+                    continue
+                runtime_guard.register_session(session_id)
+                if attempt["outcome"] == "running":
+                    reserve = _money(attempt.get("reserved_yen"))
+                    if reserve is not None:
+                        runtime_guard.register_reservation(session_id, reserve)
+                messages = attempt["_messages"]
+                if messages:
+                    if not runtime_guard.observe_api_messages(session_id, messages):
+                        runtime_guard.record_observation_failure(
+                            f"usage accounting incomplete for session {session_id}"
+                        )
+                elif attempt["outcome"] != "running":
+                    runtime_guard.record_observation_failure(
+                        f"completed session has no usage messages: {session_id}"
+                    )
+
     accepted: set[str] = set()
     running: set[str] = set()
     failed: set[str] = set()
@@ -257,7 +378,6 @@ def evaluate_run(
                 evidence = ("unknown" if not observed else
                             "matched" if all(item[0] for item in observed) else "mismatch")
                 valid = valid and row.get("model") == format_model(expected) and evidence == "matched"
-            cost = _money(row.get("spent_yen"))
             # All paid attempts, including failed/retried attempts.
             for attempt in rows:
                 if attempt["outcome"] != "running":
@@ -284,11 +404,19 @@ def evaluate_run(
             accepted.add(tid)
         else:
             failed.add(tid)
+        retry_cost_evidenced = (
+            bool(
+                runtime_guard is not None
+                and runtime_guard.accounting_complete
+                and runtime_guard.snapshots.get(row["session_id"])
+                and runtime_guard.snapshots[row["session_id"]].messages
+            )
+        )
         if (executor == "agent" and status == "failed" and len(rows) == 1
                 and (retry_limits or {}).get(tid, 0) == 1
                 and row.get("failure_reason") == "execution_failure"
                 and evidence == "matched" and row.get("model") == format_model(resolutions[tid].resolved_model)
-                and _money(row.get("spent_yen")) is not None
+                and retry_cost_evidenced
                 and not budget_error):
             retryable.add(tid)
         for attempt in rows:
@@ -304,8 +432,41 @@ def evaluate_run(
         })
 
     # Include primary only when its execution model and cost evidence are verified.
-    unknown_spend = not parent_verified or primary_cost is None or unknown_child_cost
-    spent = None if unknown_spend else primary_cost + child_spent
+    if runtime_guard is not None:
+        primary_snapshot = runtime_guard.snapshots.get(parent_session)
+        primary_cost = primary_snapshot.spent_yen if primary_snapshot else None
+        child_spent = sum(
+            (snapshot.spent_yen for session_id, snapshot in runtime_guard.snapshots.items()
+             if session_id != parent_session),
+            Decimal(0),
+        )
+        missing_completed_usage = any(
+            attempt["outcome"] != "running"
+            and executors.get(tid) == "agent"
+            and (
+                runtime_guard.snapshots.get(attempt["session_id"]) is None
+                or not runtime_guard.snapshots[attempt["session_id"]].messages
+            )
+            for tid, rows in grouped.items() for attempt in rows
+        )
+        unknown_child_cost = (
+            not runtime_guard.accounting_complete
+            or missing_completed_usage
+        )
+        unknown_spend = (
+            not parent_verified or primary_cost is None or unknown_child_cost
+            or not runtime_guard.accounting_complete
+        )
+        spent = None if unknown_spend else primary_cost + child_spent
+        primary_report_cost = (
+            primary_cost
+            if parent_verified and primary_cost is not None and runtime_guard.accounting_complete
+            else None
+        )
+    else:
+        unknown_spend = not parent_verified or primary_cost is None or unknown_child_cost
+        spent = None if unknown_spend else primary_cost + child_spent
+        primary_report_cost = primary_cost if parent_verified and primary_cost is not None else None
     if parent_state == "running":
         if parent_reserved is None:
             unknown_reserved = True
@@ -313,13 +474,22 @@ def evaluate_run(
             child_reserved += parent_reserved
     reserved_total = None if unknown_reserved else child_reserved
     ready_tasks(tasks, accepted=accepted, running=running, failed=failed)
+    runtime_latched = bool(runtime_guard is not None and runtime_guard.is_latched)
+    if runtime_guard is not None:
+        for row in report_rows:
+            if executors.get(row["task_id"]) != "agent":
+                continue
+            snapshot = runtime_guard.snapshots.get(row["session_id"])
+            row["cost_yen"] = (
+                str(snapshot.spent_yen) if snapshot is not None and snapshot.messages else None
+            )
     overlaps = []
     for i, (a, b, tid) in enumerate(intervals):
         for c, d, other in intervals[i + 1:]:
             if a < d and c < b:
                 overlaps.append({"task_ids": [tid, other], "from_ms": max(a, c),
                                  "to_ms": min(b, d), "walltime_ms": max(0, min(b, d)-max(a, c))})
-    return RunState(accepted, running, failed, retryable, spent, reserved_total, budget_error, {
+    report = {
         "run_id": run_id, "plan_sha256": plan_sha256,
         "primary": {
             "session_id": parent_session, "model": primary_model,
@@ -331,17 +501,31 @@ def evaluate_run(
         "parallel_overlaps": overlaps,
         "walltime_ms": as_of - start,
         "costs": {"total_spent_yen": None if spent is None else str(spent),
-                  "primary_spent_yen": str(primary_cost) if parent_verified and primary_cost is not None else None,
+                  "primary_spent_yen": str(primary_report_cost) if primary_report_cost is not None else None,
                   "children_spent_yen": None if unknown_child_cost else str(child_spent),
                   "reserved_yen": None if reserved_total is None else str(reserved_total)},
         "reservation_note": "reserved_yen includes primary reservation and separate running child attempt reservations",
         "unknown_cost": unknown_spend,
-        "unknown_reason": ("primary model/cost evidence unavailable" if not parent_verified or primary_cost is None
-                           else "one or more completed agent costs unavailable" if unknown_child_cost else None),
+        "unknown_reason": (
+            "primary model/cost evidence unavailable"
+            if not parent_verified or primary_cost is None else
+            "OpenCode usage accounting incomplete"
+            if runtime_guard is not None and not runtime_guard.accounting_complete else
+            "one or more completed agent costs unavailable" if unknown_child_cost else None
+        ),
         "provider_budget_error": budget_error,
-        "paid_launch_allowed": not unknown_spend and not budget_error,
+        "paid_launch_allowed": not unknown_spend and not budget_error and not runtime_latched,
         "evidence_trust": "normalized local observations are trusted; not tamper-proof",
-    })
+    }
+    runtime = _runtime_report(runtime_guard)
+    if runtime:
+        report["runtime"] = runtime
+    if runtime_latched:
+        retryable.clear()
+    return RunState(
+        accepted, running, failed, retryable, spent, reserved_total,
+        budget_error, report, runtime_latched,
+    )
 
 
 def _walltime_text(ms: int) -> str:
@@ -410,10 +594,14 @@ def summarize_report(report: dict) -> dict:
         }
 
     primary = report.get("primary") or {}
-    return {
+    summary = {
         "walltime_ms": walltime,
         "walltime_text": _walltime_text(walltime),
         "outcome": primary.get("outcome"),
         "cost": cost,
         "budget": budget_summary,
     }
+    runtime = report.get("runtime")
+    if isinstance(runtime, dict):
+        summary["runtime"] = runtime
+    return summary

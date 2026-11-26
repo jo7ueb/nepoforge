@@ -32,7 +32,11 @@ TEMPLATE_DIR = DATA_DIR / "templates"
 # 相対パスは ~/.config/opencode 起点で、key はエージェント ID 等に使う。
 USER_AGENT_IDS = ("architect", "expert", "explore", "implementer", "reviewer")
 USER_COMMANDS = ("commands/nfgo.md",)
-USER_MANAGED_FILES = tuple(f"agents/{a}.md" for a in USER_AGENT_IDS) + USER_COMMANDS
+USER_PLUGINS = (
+    "plugins/runtime-guard.ts",
+    "plugins/runtime-guard-core.mjs",
+)
+USER_MANAGED_FILES = tuple(f"agents/{a}.md" for a in USER_AGENT_IDS) + USER_COMMANDS + USER_PLUGINS
 
 STATE_DIRNAME = "nepoforge"
 MANIFEST_NAME = "manifest.json"

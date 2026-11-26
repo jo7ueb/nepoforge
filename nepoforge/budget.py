@@ -190,6 +190,24 @@ def decide_launch(
             reason="budget limit is not set (unset is not unlimited)",
             price_basis=PRICE_BASIS,
         )
+    try:
+        limit = Decimal(str(state.limit_yen))
+        spent = Decimal(str(state.spent_yen))
+        reserved = Decimal(str(state.reserved_yen))
+    except (InvalidOperation, ValueError):
+        return LaunchDecision(
+            allowed=False, reason="invalid budget state (deny paid launch)",
+            price_basis=PRICE_BASIS,
+        )
+    if (
+        not limit.is_finite() or limit < 0
+        or not spent.is_finite() or spent < 0
+        or not reserved.is_finite() or reserved < 0
+    ):
+        return LaunchDecision(
+            allowed=False, reason="invalid budget state (deny paid launch)",
+            price_basis=PRICE_BASIS,
+        )
     if est.max_input_tokens == est.max_output_tokens == 0:
         return LaunchDecision(
             allowed=False,
@@ -197,8 +215,8 @@ def decide_launch(
             price_basis=PRICE_BASIS,
         )
     cost = estimate_cost_yen(est, prices)
-    projected = Decimal(str(state.spent_yen)) + Decimal(str(state.reserved_yen)) + Decimal(str(cost))
-    if projected > Decimal(str(state.limit_yen)):
+    projected = spent + reserved + Decimal(str(cost))
+    if projected > limit:
         return LaunchDecision(
             allowed=False,
             reason=(
