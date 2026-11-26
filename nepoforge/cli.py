@@ -18,7 +18,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import __version__, jsonc, profiles, store, derive
+from . import __version__, budget, jsonc, planning, profiles, resolver, store, derive
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -583,6 +583,184 @@ def cmd_disable(args: argparse.Namespace) -> int:
 # profile
 
 
+def _read_plan_file(path: str) -> list[dict]:
+    """計画 JSON ({"tasks": [...]} または bare list) を読み込む。"""
+    try:
+        text = Path(path).read_text(encoding="utf-8")
+    except OSError as exc:
+        raise NepoforgeError(f"cannot read plan file: {path} ({exc})") from exc
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        raise NepoforgeError(f"plan file is not JSON: {path} ({exc})") from exc
+    if isinstance(data, dict):
+        data = data.get("tasks")
+    if not isinstance(data, list):
+        raise NepoforgeError(f"plan must be an array of tasks or {{\"tasks\": [...]}}: {path}")
+    return data
+
+
+def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
+    """計画 1 件を PlannedTask と resolver/budget 用の拡張属性に分ける。"""
+    if not isinstance(raw, dict):
+        raise NepoforgeError("plan task must be an object")
+    for key in ("task_id", "role"):
+        if not isinstance(raw.get(key), str):
+            raise NepoforgeError(f"plan task requires string '{key}'")
+    extras = {
+        k: raw[k]
+        for k in (
+            "model_request",
+            "model_request_source",
+            "executor",
+            "capabilities",
+            "complexity",
+            "risk",
+            "concern",
+            "context_tokens",
+            "max_input_tokens",
+            "max_output_tokens",
+            "retries",
+        )
+        if k in raw
+    }
+    task = planning.PlannedTask(
+        task_id=raw["task_id"],
+        role=raw["role"],
+        depends_on=tuple(raw.get("depends_on", ()) or ()),
+        write_scope=tuple(raw.get("write_scope", ()) or ()),
+    )
+    return task, extras
+
+
+def cmd_plan(args: argparse.Namespace) -> int:
+    """タスク計画の検証・ready 判定・予算ゲート (課金なし)。設計メモ 0005 §4.4・0008。"""
+    tasks_raw = _read_plan_file(args.file)
+    planned, extras = [], {}
+    for i, raw in enumerate(tasks_raw):
+        task, ext = _plan_task_from_dict(raw)
+        planned.append(task)
+        extras[task.task_id] = ext
+
+    if args.plan_command == "validate":
+        planning.validate_plan(planned)
+        if args.json:
+            print(json.dumps({"valid": True, "tasks": len(planned)}, ensure_ascii=False))
+        else:
+            print(f"plan is valid ({len(planned)} tasks)")
+        return 0
+
+    # ready: 計画検証 → モデル解決 → ready 判定 → 予算ゲート
+    planning.validate_plan(planned)
+    manifest = store.load_manifest(store.manifest_path())
+    profile_name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
+    config = profiles.load_profile_config(profile_name)
+    max_parallel = args.max_parallel or config.constraints.max_parallel
+
+    accepted = set(filter(None, (args.accepted or "").split(","))) if args.accepted else set()
+    running = set(filter(None, (args.running or "").split(","))) if args.running else set()
+    failed = set(filter(None, (args.failed or "").split(","))) if args.failed else set()
+
+    ready_ids = planning.ready_tasks(
+        planned, accepted=accepted, running=running, failed=failed, max_parallel=max_parallel
+    )
+    by_id = {t.task_id: t for t in planned}
+
+    resolved: dict[str, str] = {}
+    unresolved: list[dict] = []
+    for tid, ext in extras.items():
+        executor = ext.get("executor", "agent")
+        request = ext.get("model_request")
+        model_ref = profiles.parse_model(request) if request else None
+        res = resolver.resolve(
+            resolver.TaskInput(
+                task_id=tid,
+                role=by_id[tid].role,
+                capabilities=tuple(ext.get("capabilities", ()) or ()),
+                complexity=ext.get("complexity", "medium"),
+                risk=ext.get("risk", "medium"),
+                concern=ext.get("concern"),
+                context_tokens=ext.get("context_tokens"),
+                model_request=model_ref,
+                model_request_source=ext.get("model_request_source", "coordinator"),
+                executor=executor,
+            ),
+            config,
+        )
+        if res.status == "selected" and res.resolved_model is not None:
+            resolved[tid] = profiles.format_model(res.resolved_model)
+        elif res.status != "selected":
+            # executor=tool の通常解決 (reason=tool, model=None) は未解決ではない
+            unresolved.append({"task_id": tid, "reason": res.reason})
+
+    launch: list[str] = []
+    denied: list[dict] = []
+    not_ready = [tid for tid in by_id if tid not in ready_ids]
+    state = budget.BudgetState(
+        limit_yen=args.limit_yen,
+        spent_yen=args.spent_yen,
+        reserved_yen=args.reserved_yen,
+    )
+    for tid in ready_ids:
+        ext = extras[tid]
+        model = resolved.get(tid)
+        if ext.get("executor", "agent") == "tool":
+            # 決定的ツール実行は課金なし。ただし信頼できない model_request が
+            # 付いた場合は resolver が unresolved にするため、起動しない (#52)。
+            if any(u["task_id"] == tid for u in unresolved):
+                denied.append(
+                    {"task_id": tid, "reason": unresolved_reason(unresolved, tid)}
+                )
+            else:
+                launch.append(tid)
+            continue
+        if model is None:
+            denied.append(
+                {"task_id": tid, "reason": f"model unresolved ({unresolved_reason(unresolved, tid)})"}
+            )
+            continue
+        est = budget.LaunchEstimate(
+            model=model,
+            max_input_tokens=ext.get("max_input_tokens", args.est_input),
+            max_output_tokens=ext.get("max_output_tokens", args.est_output),
+            retries=ext.get("retries", args.retries),
+        )
+        d = budget.decide_launch(state, est, provider_budget_error=args.budget_error)
+        if d.allowed:
+            launch.append(tid)
+        else:
+            denied.append({"task_id": tid, "reason": d.reason})
+    # 予算で拒否されたタスクの予約は reserved に積まない (起動しないため)。
+    result = {
+        "profile": profile_name,
+        "ready": ready_ids,
+        "launch": launch,
+        "denied": denied,
+        "not_ready": sorted(not_ready),
+        "resolved": resolved,
+        "unresolved": unresolved,
+    }
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(f"profile: {profile_name}")
+        print(f"  launch:     {' '.join(launch) if launch else '(none)'}")
+        for d in denied:
+            print(f"  denied:     {d['task_id']} — {d['reason']}")
+        if not_ready:
+            print(f"  not ready:  {' '.join(sorted(not_ready))}")
+        for u in unresolved:
+            print(f"  unresolved: {u['task_id']} — {u['reason']}")
+    return 0
+
+
+def unresolved_reason(unresolved: list[dict], task_id: str) -> str:
+    for u in unresolved:
+        if u["task_id"] == task_id:
+            return u["reason"]
+    return "unknown"
+
+
 def cmd_profile(args: argparse.Namespace) -> int:
     if args.profile_command == "list":
         current = None
@@ -961,6 +1139,32 @@ def build_parser() -> argparse.ArgumentParser:
     pderive.add_argument("--dry-run", action="store_true", help="計画と差分のみ表示し、変更しない")
     pderive.add_argument("--force", action="store_true", help="衝突・改変ファイルをバックアップ後に上書き/削除する")
     p.set_defaults(fn=cmd_profile)
+
+    p = sub.add_parser("plan", help="タスク計画の検証・ready 判定・予算ゲート (課金なし)")
+    pplan = p.add_subparsers(dest="plan_command", required=True)
+    pvalidate = pplan.add_parser("validate", help="計画 JSON を検証する")
+    pvalidate.add_argument("file", help="計画 JSON ({\"tasks\": [...]} または配列)")
+    pvalidate.add_argument("--json", action="store_true", help="JSON で出力する")
+    pvalidate.set_defaults(fn=cmd_plan)
+    pready = pplan.add_parser(
+        "ready",
+        help="検証・モデル解決・ready 判定・予算ゲートを通過した起動候補を返す",
+    )
+    pready.add_argument("file", help="計画 JSON ({\"tasks\": [...]} または配列)")
+    pready.add_argument("--profile", help="モデル解決に使うプロファイル (既定: 現行)")
+    pready.add_argument("--accepted", help="受理済み task_id のカンマ区切り")
+    pready.add_argument("--running", help="実行中 task_id のカンマ区切り")
+    pready.add_argument("--failed", help="失敗 task_id のカンマ区切り (後続は blocked)")
+    pready.add_argument("--max-parallel", type=int, help="並列上限 (既定: プロファイル値)")
+    pready.add_argument("--est-input", type=int, default=200_000, help="見積りの既定入力トークン上限 (タスク単位で上書き可)")
+    pready.add_argument("--est-output", type=int, default=50_000, help="見積りの既定出力トークン上限 (タスク単位で上書き可)")
+    pready.add_argument("--retries", type=int, default=1, help="見積りに積む自動再試行回数 (既定 1)")
+    pready.add_argument("--limit-yen", type=float, help="予算上限 (円)。未指定は未設定として起動を拒否する")
+    pready.add_argument("--spent-yen", type=float, default=0.0, help="実績費用 (円・推定含む)")
+    pready.add_argument("--reserved-yen", type=float, default=0.0, help="実行中タスクの予約額 (円)")
+    pready.add_argument("--budget-error", action="store_true", help="provider 予算超過後の停止モード (全起動を拒否)")
+    pready.add_argument("--json", action="store_true", help="JSON で出力する")
+    pready.set_defaults(fn=cmd_plan)
 
     return parser
 
