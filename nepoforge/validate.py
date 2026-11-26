@@ -240,7 +240,10 @@ def check_commands() -> tuple[list[dict[str, str]], set[str]]:
 
 
 def check_role_references(agent_models: dict[str, str], commands: set[str]) -> list[dict[str, str]]:
-    """エージェント同士・コマンドとの参照 (役割名) が解決できることを検査する。"""
+    """エージェント同士・コマンドとの参照 (役割名・コマンド名) が解決できることを検査する。
+
+    役割名は、前後が単語の区切り (空白・`-`・句読点・行末等) にあるものだけを参照とみなす。
+    """
     problems: list[dict[str, str]] = []
     agents_dir = store.DATA_DIR / "agents"
     role_pattern = re.compile(r"(?<![\w-])(" + "|".join(store.USER_AGENT_IDS) + r")(?=-|[\s`）)、。,.]|$)")
@@ -309,7 +312,7 @@ def check_profiles(agent_models: dict[str, str]) -> list[dict[str, str]]:
             problems.append(problem("profiles", rel, str(exc)))
             continue
         except Exception as exc:  # noqa: BLE001 - どの例外も設定の破損として報告する
-            problems.append(problem("profiles", rel, f"profile failed to load: {type(exc).__name__}: {exc}"))
+            problems.append(problem("profiles", rel, f"profile '{name}' failed to load: {type(exc).__name__}: {exc}"))
             continue
         candidate_models = {str(c.ref) for c in config.candidates}
         for role, model in config.roles.items():

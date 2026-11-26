@@ -52,7 +52,7 @@ jobs:
 
       - name: Validate bundled configuration
         # スキーマ・frontmatter・役割参照・プロファイル・テンプレートの整合性 (#11)。
-        # 不正な設定が 1 件でもあれば終了コード 1 で失敗する。
+        # 不正な設定が 1 件でもあれば終了コード 1 で失敗する (詳細は問題一覧として出力する)。
         run: python -m nepoforge validate
 
   package:
