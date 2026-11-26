@@ -163,7 +163,11 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
 
 ## 4. Model Resolver
 
-**#70 の適用規則（下記の当初案より優先）**: 同梱 3 プロファイルは末端を軽量モデルで解決し、高難度・高リスクの場合に上位候補を選ぶ。計画 JSON の `model_request` は出所の自己申告を含め拒否する。人間が設定した選択はプロファイルで行い、直接 Resolver に渡す人間設定由来の明示指定も一致した規則を上書きできない。一致した規則がすべて不適格なら役割既定には戻さない。`plan ready` は選択した起動先の管理定義と予算を検証し、実行時の有効設定・実行モデルは `/nfgo` が突合する。
+**#70 の適用規則（下記の当初案より優先）**: `responsibility` (`leaf` / `integration`)、`task_kind`、既存の複雑度・リスク・能力条件、`data_policy` を使う。高難度・高リスクだけでは末端を昇格させない。能力・文脈長・データ条件に要求があれば、情報なしは不適格。一致した規則がすべて不適格なら役割既定には戻さない。計画 JSON のモデル・推論設定指定による上書きは拒否し、直接 Resolver に渡す人間設定由来の明示指定も一致した規則を上書きできない。`primary_model` は起動前照合用の推奨値で、設定やセッションを変更しない。
+
+2026-11-26 の FastMetal 公開資料による判断: [GPT OSS 20B](https://fastmetal.jp/models/openai/gpt-oss-20b) と [120B](https://fastmetal.jp/models/openai/gpt-oss-120b) は学習不使用・保持未確認。通常の `no_training` には適格だが、ゼロ保持要件には使わない。[GLM Flash Japan](https://fastmetal.jp/models/z-ai/glm-5-3-flash-japan) のツール呼び出しと厳密な JSON スキーマ強制は区別し、後者は [GLM の実行ルートに関する比較記事](https://fastmetal.jp/blog/deepseek-v4-1-flash-vs-glm-5-3-flash) も踏まえ候補能力に登録しない。厳密なスキーマ出力・ゼロ保持を示す資料が揃っているのは同梱候補では [DeepSeek Flash 1017 Japan](https://fastmetal.jp/models/deepseek/japan-deepseek-v4-1-flash-1017) のみ。同国内版の割引は 2026-12-04 (日本時間) まで。終了後は現在単価が確認されるまで同ルートの起動判定を拒否する。
+
+[推論制御の資料](https://fastmetal.jp/docs/api/reasoning) に基づき 20B は低強度、Gemma は思考オフ、国内上位モデルと 120B はプロバイダー既定。ルールの `max_output_tokens` は回答と推論を含む**タスク全体の予算見積り**を抑える。OpenCode の `limit.output` はモデルのリクエスト設定であり、セッション全体のトークン数、再試行や実支出は強制できない。`plan ready` は管理定義と見積りを確認し、実行時の有効設定・実行モデルは `/nfgo` が照合する。
 
 ### 4.1 配置と関数シグネチャ (案)
 
@@ -511,5 +515,3 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 | (5) 適格条件 (送信先・保持・コンテキスト・費用上限) | §3.2 (`candidates` / `constraints`)・§4.2 step 1 |
 | (6) AGENTS / architecture / ROADMAP / 配布手順の整合 | §2.2 (R7–R9)・§8.1 |
 | (7) 細粒度分解方針の先行反映・0005 論理フィールド維持 | §0・§2.2・§7 |
-
-
