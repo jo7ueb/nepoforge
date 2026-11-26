@@ -148,20 +148,22 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
 3. `task_rules`: 配列。`when` は空でなく、キーは `{role, capabilities, complexity, risk, concern}` の部分集合。`complexity` / `risk` は `low|medium|high`、`role` は 5 役、`capabilities` は文字列の配列。各ルールの `model` は有効候補に含まれること (含まれない場合はロード時にエラー — 実行時ではなく設定時に壊れたルールを検出する)。
 4. `constraints.providers`: 配列。各要素は `id` (文字列)・`approved` (真偽)・`destination`・`retention` (文字列) を必須とする。候補の provider は `approved: true` の provider に含まれること。
 5. `constraints.max_parallel`: 1 以上の整数。
-6. **roles の値は常に有効候補に含める** (暗黙追加)。`candidates` 省略時の既定 = 同梱 3 プロファイル roles の和集合 + local の roles の値 (0005 §5.2 の初期定義と一致 — §3.1 事実 4 の 5 モデル)。`candidates` 明示時は roles ⊆ candidates を検証しない代わりに、roles の値を候補に union する (ローカルで新モデルを roles に足すだけで承認済み候補になる。承認の主体は「プロファイルに書いた人間」)。
+6. **候補は現行プロファイル内に限定する** (#70)。`candidates` 明示時はその一覧だけを候補にする。省略時は現行プロファイル自身の `roles` のモデルだけを候補にする。
 7. `local` プロファイル (`~/.config/nepoforge/profile.json`): roles 必須は現行どおり。optional キーも同一スキーマで検証する。省略時は既定値 (§3.3 規則 6)。
 
 ### 3.4 既定値の確定
 
 | キー | 省略時の既定 |
 | --- | --- |
-| `candidates` | 同梱 3 プロファイル roles の和集合 + local の roles の値 (capabilities / context_tokens は null = 情報なし) |
+| `candidates` | 現行プロファイルの `roles` の値 (capabilities / context_tokens は null = 情報なし) |
 | `task_rules` | 空配列 (Resolver は 明示指定 → 役割デフォルト の 2 段で動く) |
 | `constraints.providers` | `[{"id": "fastmetal", "approved": true, ...}]` (同梱プロファイルに登場する provider の集合) |
 | `constraints.max_parallel` | 10 (0005 §7.5。2026-11-25 の人間判断で 3 から変更) |
 | `constraints.budget` | `{ "per_task": null, "note": "..." }` |
 
 ## 4. Model Resolver
+
+**#70 の適用規則（下記の当初案より優先）**: 同梱 3 プロファイルは末端を軽量モデルで解決し、高難度・高リスクの場合に上位候補を選ぶ。計画 JSON の `model_request` は出所の自己申告を含め拒否する。人間が設定した選択はプロファイルで行い、直接 Resolver に渡す人間設定由来の明示指定も一致した規則を上書きできない。一致した規則がすべて不適格なら役割既定には戻さない。`plan ready` は選択した起動先の管理定義と予算を検証し、実行時の有効設定・実行モデルは `/nfgo` が突合する。
 
 ### 4.1 配置と関数シグネチャ (案)
 
@@ -509,6 +511,5 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 | (5) 適格条件 (送信先・保持・コンテキスト・費用上限) | §3.2 (`candidates` / `constraints`)・§4.2 step 1 |
 | (6) AGENTS / architecture / ROADMAP / 配布手順の整合 | §2.2 (R7–R9)・§8.1 |
 | (7) 細粒度分解方針の先行反映・0005 論理フィールド維持 | §0・§2.2・§7 |
-
 
 

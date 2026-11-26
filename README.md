@@ -137,9 +137,11 @@ nepoforge profile derive          # 派生定義 (agents/nf-<role>-<slug>.md) �
 
 `profile derive` は、プロファイルの `task_rules` が参照する (役割, モデル) の組合せのうち役割既定と異なるものについて、元の役割定義の `model:` 行だけを差し替えた派生エージェント定義 (`nf-<role>-<slug>`) を生成します。権限は元の役割から複製され、モデルを変えても拡大しません。生成物は再生成可能なため削除・上書きの対象は内容が生成規則と一致するものに限られます。既存の非管理ファイルは上書きしません (`--force` でバックアップ後に上書き)。
 
+`/nfgo` は同梱 3 プロファイルすべてで末端タスクを軽量モデルに割り当てます。高難度の統合判断や高リスクの作業には別のルールを適用します。起動判定は `nepoforge plan ready --json` で行い、モデルと起動先に加え、バッチ内の予算予約額を返します。`profile show` の役割モデルは、通常の役割エージェントの既定値です。
+
 `subagent` 権限に明示的な許可リストを設定している場合は、派生 ID を使うために `nf-*` を allow に追加してください (権限設定は CLI が書き換えません)。並列上限はプロファイルの `constraints.max_parallel` (未設定時 10) で調整します。
 
-個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。プロジェクト固有の上書きは、そのリポジトリの設定で `agents.<id>.model` を定義します (プロジェクト設定がグローバル定義に上書きマージされるため)。
+個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。候補を省略した旧プロファイルでは、そのプロファイル自身の `roles` が候補になります。`candidates` を明示する場合、ルールと起動に使うモデルをそこに列挙します。プロジェクト固有の `agents.<id>.model` 上書きも OpenCode では有効ですが、`/nfgo` は有効設定が選択結果と異なる委譲を起動しません。
 
 `scripts/switch_profile.py` は旧方式で導入したリポジトリ向けの互換スクリプトです。本リポジトリでは `nepoforge profile use` を使用します。
 
