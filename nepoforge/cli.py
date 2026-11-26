@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 from . import __version__, budget, jsonc, planning, profiles, resolver, store, derive
@@ -850,7 +851,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
             continue
         launch.append(tid)
         reservations[tid] = d.estimated_cost_yen
-        state = replace(state, reserved_yen=state.reserved_yen + d.estimated_cost_yen)
+        reserved = Decimal(str(state.reserved_yen)) + Decimal(str(d.estimated_cost_yen))
+        state = replace(state, reserved_yen=reserved)
     result = {
         "profile": profile_name,
         "ready": ready_ids,

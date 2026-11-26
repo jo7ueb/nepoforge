@@ -87,6 +87,18 @@ class TestDecideLaunch(unittest.TestCase):
             decide_launch(BudgetState(limit_yen=0.4031), _est()).allowed
         )
 
+    def test_tiny_estimate_rounds_up_and_fractional_spend_counts(self) -> None:
+        estimate = LaunchEstimate("fastmetal/llama-3.1-8b-instruct", 1, 1)
+        self.assertEqual(estimate_cost_yen(estimate), 0.0001)
+        self.assertFalse(decide_launch(BudgetState(limit_yen=0), estimate).allowed)
+        self.assertFalse(
+            decide_launch(BudgetState(limit_yen=0.4032, reserved_yen=0.00001), _est()).allowed
+        )
+
+    def test_paid_launch_rejects_zero_token_estimate(self) -> None:
+        estimate = LaunchEstimate("fastmetal/llama-3.1-8b-instruct", 0, 0)
+        self.assertFalse(decide_launch(BudgetState(limit_yen=LIMIT), estimate).allowed)
+
     def test_provider_budget_error_stops_everything(self) -> None:
         # 予算残高に余裕があっても、超過検知後は新規起動を拒否する
         state = BudgetState(limit_yen=LIMIT)

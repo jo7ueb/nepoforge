@@ -19,6 +19,7 @@ provider・OpenCode 側では支出の強制ができない (強制可能な制�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_CEILING
 from math import isfinite
 from typing import Mapping
 
@@ -76,7 +77,7 @@ class BudgetState:
 
     limit_yen: float | None
     spent_yen: float = 0.0
-    reserved_yen: float = 0.0
+    reserved_yen: float | Decimal = 0.0
 
     def __post_init__(self) -> None:
         for name in ("limit_yen", "spent_yen", "reserved_yen"):
@@ -115,18 +116,18 @@ def price_for(model: str, prices: Mapping[str, tuple[float, float]] = PRICES) ->
     return prices.get(model)
 
 
-def estimate_cost_yen(est: LaunchEstimate) -> float:
+def estimate_cost_yen(
+    est: LaunchEstimate, prices: Mapping[str, tuple[float, float]] = PRICES
+) -> float:
     """見積りの上限額 (円)。未知の価格は BudgetError (起動拒否の理由になる)。"""
-    price = price_for(est.model)
+    price = price_for(est.model, prices)
     if price is None:
         raise BudgetError(f"unknown price for model: {est.model}")
     attempts = 1 + est.retries
-    cost = (
-        (est.max_input_tokens * price[0] + est.max_output_tokens * price[1])
-        / 1_000_000
-        * attempts
-    )
-    return round(cost, 4)
+    input_rate, output_rate = (Decimal(str(rate)) for rate in price)
+    cost = (est.max_input_tokens * input_rate + est.max_output_tokens * output_rate)
+    cost = cost * attempts / 1_000_000
+    return float(cost.quantize(Decimal("0.0001"), rounding=ROUND_CEILING))
 
 
 def decide_launch(
@@ -166,9 +167,15 @@ def decide_launch(
             reason="budget limit is not set (unset is not unlimited)",
             price_basis=PRICE_BASIS,
         )
-    cost = estimate_cost_yen(est)
-    projected = round(state.spent_yen + state.reserved_yen + cost, 4)
-    if projected > state.limit_yen:
+    if est.max_input_tokens == est.max_output_tokens == 0:
+        return LaunchDecision(
+            allowed=False,
+            reason="paid launch requires a non-zero token estimate",
+            price_basis=PRICE_BASIS,
+        )
+    cost = estimate_cost_yen(est, prices)
+    projected = Decimal(str(state.spent_yen)) + Decimal(str(state.reserved_yen)) + Decimal(str(cost))
+    if projected > Decimal(str(state.limit_yen)):
         return LaunchDecision(
             allowed=False,
             reason=(
@@ -176,13 +183,13 @@ def decide_launch(
                 f" limit {state.limit_yen:.4f} yen"
             ),
             estimated_cost_yen=cost,
-            projected_cost_yen=projected,
+            projected_cost_yen=float(projected),
             price_basis=PRICE_BASIS,
         )
     return LaunchDecision(
         allowed=True,
         estimated_cost_yen=cost,
-        projected_cost_yen=projected,
+        projected_cost_yen=float(projected),
         price_basis=PRICE_BASIS,
     )
 
