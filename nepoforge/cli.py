@@ -19,7 +19,7 @@ from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 
-from . import __version__, budget, jsonc, planning, profiles, resolver, store, derive
+from . import __version__, budget, data_policy, jsonc, planning, profiles, resolver, store, derive
 from .store import (
     MANAGED_MARKER_BEGIN,
     NepoforgeError,
@@ -715,6 +715,8 @@ def _read_plan_file(path: str) -> list[dict]:
     except ValueError as exc:
         raise NepoforgeError(f"plan file is not JSON: {path} ({exc})") from exc
     if isinstance(data, dict):
+        if "data_policy" in data:
+            raise NepoforgeError("plan cannot set the project data_policy")
         data = data.get("tasks")
     if not isinstance(data, list):
         raise NepoforgeError(f"plan must be an array of tasks or {{\"tasks\": [...]}}: {path}")
@@ -741,6 +743,10 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
         raise NepoforgeError("plan task 'context_tokens' must be a positive integer")
     if raw.get("task_kind") is not None and not isinstance(raw["task_kind"], str):
         raise NepoforgeError("plan task 'task_kind' must be a string")
+    if "data_policy" in raw:
+        data_policy.validate(raw["data_policy"])
+    if "domestic_only" in raw and not isinstance(raw["domestic_only"], bool):
+        raise NepoforgeError("plan task 'domestic_only' must be boolean")
     extras = {
         k: raw[k]
         for k in (
@@ -754,6 +760,7 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
             "responsibility",
             "task_kind",
             "data_policy",
+            "domestic_only",
             "max_input_tokens",
             "max_output_tokens",
             "retries",
@@ -791,6 +798,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
     manifest = store.load_manifest(store.manifest_path())
     profile_name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
     config = profiles.load_profile_config(profile_name)
+    project_policy = data_policy.load_project_policy()
     max_parallel = args.max_parallel or config.constraints.max_parallel
 
     accepted = set(filter(None, (args.accepted or "").split(","))) if args.accepted else set()
@@ -825,8 +833,10 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 responsibility=ext.get("responsibility", "leaf"),
                 task_kind=ext.get("task_kind"),
                 data_policy=ext.get("data_policy"),
+                domestic_only=ext.get("domestic_only", False),
             ),
             config,
+            project_policy=project_policy,
         )
         if res.status == "selected" and res.resolved_model is not None:
             resolved[tid] = profiles.format_model(res.resolved_model)
@@ -890,6 +900,7 @@ def cmd_plan(args: argparse.Namespace) -> int:
         state = replace(state, reserved_yen=reserved)
     result = {
         "profile": profile_name,
+        "data_policy": project_policy,
         "ready": ready_ids,
         "launch": launch,
         "reservations_yen": reservations,
@@ -902,6 +913,8 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 "reason": res.reason,
                 "reasoning": res.reasoning,
                 "max_output_tokens": res.max_output_tokens,
+                "data_policy": res.data_policy,
+                "endpoint": res.endpoint,
             }
             for tid, res in resolutions.items()
         },
@@ -946,18 +959,28 @@ def unresolved_reason(unresolved: list[dict], task_id: str) -> str:
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
-    if args.profile_command == "check-primary":
+    if args.profile_command in ("check-primary", "check-route"):
         manifest = store.load_manifest(store.manifest_path())
         name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
         config = profiles.load_profile_config(name)
-        if config.primary_model is None:
-            fail(f"profile '{name}' has no Primary recommendation")
         observed = profiles.parse_model(args.model)
-        if observed != config.primary_model:
-            fail(f"Primary model mismatch: selected {observed}, recommended {config.primary_model}")
+        policy = data_policy.effective(data_policy.load_project_policy(), args.data_policy)
+        if args.profile_command == "check-primary":
+            if config.primary_model is None:
+                fail(f"profile '{name}' has no Primary recommendation")
+            if observed != config.primary_model:
+                fail(f"Primary model mismatch: selected {observed}, recommended {config.primary_model}")
+        endpoint = resolver.approved_endpoint(config, observed)
+        if not endpoint or endpoint.rstrip("/") != args.endpoint.rstrip("/") or args.upstream_model != observed.model:
+            fail(f"unapproved execution route for model: {observed}")
+        candidate = next((c for c in config.candidates if c.ref == observed), None)
+        if candidate is None or not data_policy.permits(
+            policy, no_training=candidate.no_training, retention=candidate.retention
+        ):
+            fail(f"model is not eligible for Data Policy '{policy}': {observed}")
         if budget.price_for(str(observed)) is None or budget.expired_price(str(observed)):
-            fail(f"Primary model has no current price in the budget table: {observed}")
-        print(f"Primary model matches profile '{name}': {observed}")
+            fail(f"model has no current price in the budget table: {observed}")
+        print(f"route verified for profile '{name}' and Data Policy '{policy}': {observed}")
         return 0
     if args.profile_command == "list":
         current = None
@@ -1302,9 +1325,14 @@ def build_parser() -> argparse.ArgumentParser:
     pprofile.add_parser("list", help="利用可能なプロファイル一覧")
     pshow = pprofile.add_parser("show", help="プロファイルの内容を表示する")
     pshow.add_argument("name", nargs="?", default=None)
-    pcheck = pprofile.add_parser("check-primary", help="選択済みセッションのモデルを推奨値・価格と照合する (課金なし)")
-    pcheck.add_argument("--profile", help="照合するプロファイル (既定: 現行)")
-    pcheck.add_argument("--model", required=True, help="OpenCode が現在選択している provider/model[#variant]")
+    primary_check = pprofile.add_parser("check-primary", help="Primary の推奨・実行ルート・Data Policy を確認する")
+    route_check = pprofile.add_parser("check-route", help="手動起動・委譲前の実行ルートと Data Policy を確認する")
+    for check in (primary_check, route_check):
+        check.add_argument("--profile", help="照合するプロファイル (既定: 現行)")
+        check.add_argument("--model", required=True, help="選択済み provider/model[#variant]")
+        check.add_argument("--endpoint", required=True, help="有効設定の送信先 baseURL")
+        check.add_argument("--upstream-model", required=True, help="有効設定で提供元へ送る実モデル ID")
+        check.add_argument("--data-policy", choices=data_policy.POLICIES, help="プロジェクトより厳格な場合のみ指定")
     puse = pprofile.add_parser("use", help="プロファイルを適用する")
     puse.add_argument("name")
     puse.add_argument("--dry-run", action="store_true")

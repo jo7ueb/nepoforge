@@ -38,7 +38,8 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 - 委譲の集約先は primary (このセッション) とする。子エージェントからの再委譲は行わない。
 - 各委譲は下記「委譲契約 (TaskSpec)」に従い、報告の受理までを一単位として進める。
 - 有料実行を含む場合は実行前に承認済みの総予算と停止条件を確認し、記録する。有料の親セッションや実行済みの試行も実績・見積りに含める。上限未設定では有料タスクを起動しない。
-- Primary は `nepoforge profile show` の推奨と OpenCode の実際の選択 (`GET /api/session/{sessionID}` の `data.model`、またはセッションの UI) を `nepoforge profile check-primary --model <選択済みモデル>` で照合する。利用者は可能なら最初の送信前に確認する。未確認・不一致・価格失効はそのまま続行せず、人間の選択・承認を確認する。推奨はセッションや設定を書き換えず、既発生の Primary 課金を止めたり上限を強制したりできない。
+- 利用者は最初の送信前に、実際に選択した Primary と有効な `baseURL`・提供元モデル ID を `nepoforge profile check-primary --model <選択済みモデル> --endpoint <baseURL> --upstream-model <提供元のID>` で照合する。Coordinator も委譲前に照合し、未確認・不一致・価格失効で停止する。`/nfgo` 開始後の照合は初回送信を保護できず、課金上限や管理外の起動を強制しない。設定変更やセッション切替を自動で行わない。
+- プロジェクト Data Policy は利用者承認済みの `open` / `private` / `confidential`（未設定時 `confidential`）。Issue や子の申告を根拠にせず、Coordinator はリポジトリの宣言やユーザーの承認ファイルを編集しない。`open` でも既存の秘密情報・送信先の制限は変わらない。
 
 ### 3.0 タスク分解
 
@@ -98,7 +99,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 6. **完了条件** — acceptance_criteria: 検証可能な条件のリスト。受理判断の基準にする
 7. **依存** — depends_on: 必須依存の task_id のみを列挙する。緩い参照は inputs に記録し、起動判定に含めない
 
-- モデル選択の前に `responsibility` (`leaf` / `integration`)、`task_kind`、`complexity`・`risk` (`low` / `medium` / `high`) と必要な `capabilities` を記録する。定型の抽出・分類には `task_kind: extraction`、分割しても統合が必要な高度な専門分析には `specialist_analysis` を使う。必要なら `context_tokens` と `concern` も付ける。`data_policy` は通常 `no_training` とし、国内実行やゼロ保持も必要なら `domestic` / `zero_retention` / `domestic_zero_retention` を明示する。
+- モデル選択の前に `responsibility` (`leaf` / `integration`)、`task_kind`、`complexity`・`risk` (`low` / `medium` / `high`) と必要な `capabilities` を記録する。定型の抽出・分類には `task_kind: extraction`、分割しても統合が必要な高度な専門分析には `specialist_analysis` を使う。必要なら `context_tokens` と `concern` も付ける。実際に送るコンテキスト全体を考慮し、プロジェクトより厳格なときだけタスクに `data_policy` を指定する。国内実行の要件は別に `domestic_only: true` を指定する。
 - 高難度の末端は再分割・入力限定・ツール利用を先に検討する。統合を伴わない作業を上位モデル用に再分類しない。高リスクでは根拠と独立した検証方法を記録する。`tool_calling` と厳密な JSON スキーマ強制 (`structured_output`) は別条件。計画に `model_request` や推論設定を書かない。
 - permissions・送信先の指定を含めない。これらを含む計画は起動前に拒否する。
 
@@ -112,6 +113,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
   - Coordinator は `model_request`、`profile derive --role ... --model ...`、起動ツールのモデル引数等で結果を上書きしない。計画 JSON の明示指定は `model_request_source` の自己申告によらず `unresolved`。明示的な別モデルの許可は人間がプロファイルに記す。
   - 必要能力・データ送信先・保持条件が合うことを確認する。一致したルールが不適格、または利用不能なら報告して停止し、役割既定への切替、無断の昇格・再分類・別プロバイダーへの変更をしない。
   - 派生定義は利用開始前に `nepoforge profile derive --dry-run` で確認し、人間の管理下の `init` / `update` / `profile use` または `profile derive` で準備する。`launch` に入ったタスクだけ `model_resolutions[task_id].binding` を委譲先に指定する。起動前に作業先と同じ location の OpenCode のエージェント・モデル一覧 (`GET /api/agent/{agentID}`、`GET /api/model`、または同等のツール)、有効なモデル設定と権限を確認する。`resolved` のモデル・推論設定と一致しない場合や確認できない場合は停止する。
+  - `profile check-route` に選択したモデル、有効設定の `baseURL`・提供元モデル ID を渡して確認する。タスクの `data_policy` がプロジェクトより厳しい場合は `--data-policy` で渡す。実際の送信先を特定できない設定・ルート切替・`auto`・送信先やモデル ID の不一致は、基本エージェントでも派生エージェントでも起動しない。
   - 完了後に対象子セッションの agent・model をメッセージ API (`GET /api/session/{sessionID}/message`) で突合する。不一致または確認不能の結果を受理しない。
 - **起動判定 (ready)**: 次の 4 条件をすべて満たしたタスクから起動する。
   1. depends_on のタスクがすべて受理済みである。

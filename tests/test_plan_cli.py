@@ -59,6 +59,7 @@ class TestPlanReady(IsolatedEnv):
         self.dir = self.home / "work"
         self.dir.mkdir()
         self.tmp = {"dir": self.dir}
+        self.approve_project_policy(self.home, "private")
         with redirect_stdout(io.StringIO()):
             self.assertEqual(cli.main(["init"]), 0)
         self.limit = 100.0

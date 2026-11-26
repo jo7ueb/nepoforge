@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-from . import store
+from . import data_policy, store
 from .store import NepoforgeError
 
 REQUIRED_ROLES = store.USER_AGENT_IDS
@@ -182,9 +182,7 @@ class Candidate:
     approval_ref: str | None = None
     no_training: bool | None = None
     reasoning: str | None = None
-
-
-DATA_POLICIES = ("no_training", "domestic", "zero_retention", "domestic_zero_retention")
+    verified_on: str | None = None
 
 
 @dataclass(frozen=True)
@@ -202,6 +200,7 @@ class ProviderConstraint:
     retention: str | None = None
     approved: bool = False
     approval_ref: str | None = None
+    endpoint: str | None = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -312,6 +311,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 "retention": "モデル別に確認",
                 "approved": True,
                 "approval_ref": "0001 §3 / #52 PR",
+                "endpoint": "https://api.fastmetal.ai/v1",
             }
         ]
     if not isinstance(raw_providers, list):
@@ -335,6 +335,9 @@ def load_profile_config(name: str) -> ProfileConfig:
         approval_ref = pr.get("approval_ref")
         if approval_ref is not None and not isinstance(approval_ref, str):
             raise NepoforgeError(f"provider 'approval_ref' must be a string: {path}")
+        endpoint = pr.get("endpoint")
+        if endpoint is not None and (not isinstance(endpoint, str) or not endpoint):
+            raise NepoforgeError(f"provider 'endpoint' must be a non-empty string: {path}")
         providers.append(
             ProviderConstraint(
                 id=pid,
@@ -342,6 +345,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 retention=retention,
                 approved=approved,
                 approval_ref=approval_ref,
+                endpoint=endpoint,
             )
         )
     approved_ids = {p.id for p in providers if p.approved}
@@ -380,6 +384,13 @@ def load_profile_config(name: str) -> ProfileConfig:
         candidates = [Candidate(ref=ref) for ref in refs]
         candidate_model_strs = {format_model(ref) for ref in refs}
     else:
+        routes = {}
+        if path.parent == store.DATA_DIR / "profiles":
+            routes_path = store.DATA_DIR / "model-routes.json"
+            try:
+                routes = _json.loads(routes_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise NepoforgeError(f"cannot load bundled model routes: {routes_path}") from exc
         for c in raw_candidates:
             if not isinstance(c, dict):
                 raise NepoforgeError(f"candidate entry must be an object: {path}")
@@ -387,6 +398,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"candidate 'model' must be a string: {path}")
             ref = parse_model(c["model"])
             fm = format_model(ref)
+            c = c | routes.get(fm, {})
             if fm in candidate_model_strs:
                 raise NepoforgeError(f"duplicate candidate model: {fm} ({path})")
             candidate_model_strs.add(fm)
@@ -408,6 +420,9 @@ def load_profile_config(name: str) -> ProfileConfig:
             ar = c.get("approval_ref", None)
             if ar is not None and not isinstance(ar, str):
                 raise NepoforgeError(f"candidate 'approval_ref' must be a string: {path}")
+            verified_on = c.get("verified_on")
+            if verified_on is not None and not isinstance(verified_on, str):
+                raise NepoforgeError(f"candidate 'verified_on' must be a string: {path}")
             no_training = c.get("no_training")
             if no_training is not None and not isinstance(no_training, bool):
                 raise NepoforgeError(f"candidate 'no_training' must be boolean: {path}")
@@ -416,7 +431,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"candidate 'reasoning' must be off, low or provider_default: {path}")
             candidates.append(Candidate(
                 ref=ref, capabilities=caps, context_tokens=ct, destination=dest,
-                retention=ret, approval_ref=ar, no_training=no_training, reasoning=reasoning,
+                retention=ret, approval_ref=ar, no_training=no_training, reasoning=reasoning, verified_on=verified_on,
             ))
 
     # provider 承認チェック
@@ -456,8 +471,8 @@ def load_profile_config(name: str) -> ProfileConfig:
             raise NepoforgeError(f"task_rule 'responsibility' must be leaf or integration: {path}")
         if "task_kind" in when and not isinstance(when["task_kind"], str):
             raise NepoforgeError(f"task_rule 'task_kind' must be a string: {path}")
-        if "data_policy" in when and when["data_policy"] not in DATA_POLICIES:
-            raise NepoforgeError(f"task_rule 'data_policy' is invalid: {path}")
+        if "data_policy" in when:
+            data_policy.validate(when["data_policy"])
         model = r.get("model")
         if not isinstance(model, str):
             raise NepoforgeError(f"task_rule 'model' must be a string: {path}")

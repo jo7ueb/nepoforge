@@ -7,7 +7,7 @@ import dataclasses
 
 from nepoforge import profiles, resolver
 from nepoforge.profiles import ModelRef, Candidate, ProfileConfig, TaskRule, Constraints, ProviderConstraint, Budget
-from nepoforge.resolver import TaskInput, resolve
+from nepoforge.resolver import TaskInput
 from nepoforge.store import NepoforgeError
 
 
@@ -26,9 +26,13 @@ def _cfg_with_rules(task_rules=(), candidates=None, roles=None):
             Candidate(ref=ModelRef("fastmetal", "beam-1.0", None), capabilities=("code",), context_tokens=2000),
             Candidate(ref=ModelRef("fastmetal", "kimi-k3.1-pro", None), capabilities=("code", "reasoning"), context_tokens=4000),
         )
-    providers = (ProviderConstraint(id="fastmetal", approved=True, destination="d", retention="r"),)
+    providers = (ProviderConstraint(id="fastmetal", approved=True, destination="d", retention="r", endpoint="https://api.fastmetal.ai/v1"),)
     constraints = Constraints(providers=providers, max_parallel=3, budget=Budget(per_task=None, note="n"))
     return ProfileConfig(name="t", roles=roles, candidates=candidates, task_rules=tuple(task_rules), constraints=constraints)
+
+
+def resolve(task, config):
+    return resolver.resolve(task, config, project_policy="open")
 
 
 class TestResolve(unittest.TestCase):
@@ -228,9 +232,9 @@ class TestResolve(unittest.TestCase):
                  integration if name == "economy" else oss120, 32000 if name == "economy" else 16000),
                 ("reviewer", {"responsibility": "integration", "capabilities": ("structured_output",)}, strict, 32000),
                 ("reviewer", {"capabilities": ("structured_output",)}, None, None),
-                ("reviewer", {"data_policy": "domestic"}, None, None),
-                ("architect", {"responsibility": "integration", "data_policy": "domestic"}, integration, 32000),
-                ("architect", {"responsibility": "integration", "data_policy": "domestic_zero_retention"}, strict, 32000),
+                ("reviewer", {"domestic_only": True}, None, None),
+                ("architect", {"responsibility": "integration", "domestic_only": True}, integration, 32000),
+                ("architect", {"responsibility": "integration", "data_policy": "confidential", "domestic_only": True}, strict, 32000),
                 ("explore", {"context_tokens": 262145}, None, None),
             ]
             for role, options, model, output in cases:

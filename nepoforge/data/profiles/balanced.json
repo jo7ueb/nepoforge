@@ -10,16 +10,15 @@
     "reviewer": "fastmetal/gemma-4-26b-a4b-it"
   },
   "candidates": [
-    {"model": "fastmetal/gpt-oss-20b", "capabilities": ["tool_calling"], "context_tokens": 131072, "destination": "global", "no_training": true, "reasoning": "low"},
-    {"model": "fastmetal/gpt-oss-120b", "capabilities": ["tool_calling"], "context_tokens": 131072, "no_training": true, "reasoning": "provider_default"},
-    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling"], "context_tokens": 262144, "destination": "global", "no_training": true, "reasoning": "off"},
-    {"model": "fastmetal/japan-glm-5.3-flash", "capabilities": ["code", "tool_calling"], "context_tokens": 1000000, "destination": "japan", "no_training": true, "reasoning": "provider_default"},
-    {"model": "fastmetal/japan-deepseek-v4.1-flash-1017", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1048576, "destination": "japan", "retention": "zero", "no_training": true, "reasoning": "provider_default"}
+    {"model": "fastmetal/gpt-oss-20b", "capabilities": ["tool_calling"], "context_tokens": 131072, "reasoning": "low"},
+    {"model": "fastmetal/gpt-oss-120b", "capabilities": ["tool_calling"], "context_tokens": 131072, "reasoning": "provider_default"},
+    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling"], "context_tokens": 262144, "reasoning": "off"},
+    {"model": "fastmetal/japan-glm-5.3-flash", "capabilities": ["code", "tool_calling"], "context_tokens": 1000000, "reasoning": "provider_default"},
+    {"model": "fastmetal/japan-deepseek-v4.1-flash-1017", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1048576, "reasoning": "provider_default"}
   ],
   "task_rules": [
     {"when": {"responsibility": "integration", "capabilities": ["structured_output"]}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017", "max_output_tokens": 32000},
-    {"when": {"responsibility": "integration", "data_policy": "zero_retention"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017", "max_output_tokens": 32000},
-    {"when": {"responsibility": "integration", "data_policy": "domestic_zero_retention"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017", "max_output_tokens": 32000},
+    {"when": {"responsibility": "integration", "data_policy": "confidential"}, "model": "fastmetal/japan-deepseek-v4.1-flash-1017", "max_output_tokens": 32000},
     {"when": {"responsibility": "integration", "role": "expert", "task_kind": "specialist_analysis", "complexity": "high"}, "model": "fastmetal/gpt-oss-120b", "max_output_tokens": 16000},
     {"when": {"responsibility": "integration"}, "model": "fastmetal/japan-glm-5.3-flash", "max_output_tokens": 32000},
     {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low"}, "model": "fastmetal/gpt-oss-20b", "max_output_tokens": 2048},

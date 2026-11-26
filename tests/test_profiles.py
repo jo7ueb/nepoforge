@@ -149,15 +149,19 @@ class TestLoadProfileConfig(IsolatedEnv):
 
     def test_bundled_candidate_prices_provider_and_reasoning_agree(self) -> None:
         template = (store.TEMPLATE_DIR / "provider-fastmetal.jsonc").read_text(encoding="utf-8")
-        models = jsonc.loads("{" + template + "}")["providers"]["fastmetal"]["models"]
+        provider = jsonc.loads("{" + template + "}")["providers"]["fastmetal"]
+        models = provider["models"]
         for name in ("economy", "balanced", "performance"):
             config = profiles.load_profile_config(name)
             candidates = {str(candidate.ref): candidate for candidate in config.candidates}
             self.assertIn(str(config.primary_model), candidates)
+            self.assertEqual(config.constraints.providers[0].endpoint, provider["settings"]["baseURL"])
             for model, candidate in candidates.items():
                 with self.subTest(profile=name, model=model):
                     self.assertIn(model, budget.PRICES)
                     self.assertTrue(candidate.no_training)
+                    self.assertTrue(candidate.approval_ref)
+                    self.assertTrue(candidate.verified_on)
                     provider_model = models[candidate.ref.model]
                     self.assertEqual(provider_model["limit"]["context"], candidate.context_tokens)
                     self.assertTrue(provider_model["capabilities"]["tools"])

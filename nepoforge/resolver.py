@@ -6,10 +6,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
-from . import profiles
+from . import data_policy, profiles
 from .profiles import ModelRef, parse_model
 from .derive import agent_id_for
 
@@ -29,6 +29,7 @@ class TaskInput:
     responsibility: str = "leaf"
     task_kind: str | None = None
     data_policy: str | None = None
+    domestic_only: bool = False
 
 
 @dataclass(frozen=True)
@@ -43,33 +44,32 @@ class ModelResolution:
     status: str = "selected"
     reasoning: str | None = None
     max_output_tokens: int | None = None
+    data_policy: str | None = None
+    endpoint: str | None = None
 
 
-def _provider_approved_ids(config: Any) -> set[str]:
-    ids: set[str] = set()
-    for p in getattr(config.constraints, "providers", ()):
-        approved = p.approved if hasattr(p, "approved") else p.get("approved", False)
-        pid = p.id if hasattr(p, "id") else p.get("id")
-        if approved and isinstance(pid, str):
-            ids.add(pid)
-    return ids
+def approved_endpoint(config: profiles.ProfileConfig, ref: ModelRef) -> str | None:
+    # auto 等の可変ルートでは、カタログの属性を実行先に結び付けられない。
+    if ref.model == "auto":
+        return None
+    return next(
+        (p.endpoint for p in config.constraints.providers if p.id == ref.provider and p.approved),
+        None,
+    )
 
 
 def _eligible(task: TaskInput, config: Any) -> list[Any]:
-    approved_ids = _provider_approved_ids(config)
     out: list[Any] = []
     for c in config.candidates:
-        if c.ref.provider not in approved_ids:
+        if not data_policy.permits(task.data_policy, no_training=c.no_training, retention=c.retention):
+            continue
+        if not approved_endpoint(config, c.ref):
             continue
         if not set(task.capabilities).issubset(c.capabilities or ()):
             continue
         if task.context_tokens is not None and (c.context_tokens or 0) < task.context_tokens:
             continue
-        if task.data_policy and c.no_training is not True:
-            continue
-        if task.data_policy in ("domestic", "domestic_zero_retention") and c.destination != "japan":
-            continue
-        if task.data_policy in ("zero_retention", "domestic_zero_retention") and c.retention != "zero":
+        if task.domestic_only and c.destination != "japan":
             continue
         out.append(c)
     return out
@@ -87,7 +87,7 @@ def _matches(when: Any, task: TaskInput) -> bool:
     return True
 
 
-def resolve(task: TaskInput, config: Any) -> ModelResolution:
+def resolve(task: TaskInput, config: Any, *, project_policy: str = data_policy.DEFAULT) -> ModelResolution:
     def unresolved(reason: str, constraints: tuple[str, ...] = ()) -> ModelResolution:
         return ModelResolution(
             task_id=task.task_id,
@@ -105,6 +105,11 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
         return unresolved("untrusted_source")
     if task.executor not in ("agent", "tool"):
         return unresolved("invalid_executor")
+    try:
+        policy = data_policy.effective(project_policy, task.data_policy)
+    except profiles.NepoforgeError as exc:
+        return unresolved(str(exc))
+    task = replace(task, data_policy=policy)
     if task.executor == "tool":
         return ModelResolution(
             task_id=task.task_id,
@@ -113,14 +118,12 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
             resolved_model=None,
             binding="-",
             reason="tool",
+            data_policy=policy,
         )
     if task.complexity not in ("low", "medium", "high") or task.risk not in ("low", "medium", "high"):
         return unresolved("invalid_complexity_or_risk")
     if task.responsibility not in ("leaf", "integration"):
         return unresolved("invalid_responsibility")
-    if task.data_policy is not None and task.data_policy not in profiles.DATA_POLICIES:
-        return unresolved("invalid_data_policy")
-
     eligible = {c.ref: c for c in _eligible(task, config)}
     skips: list[str] = []
     resolved_ref: ModelRef | None = None
@@ -170,4 +173,6 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
         status="selected",
         reasoning=eligible[resolved_ref].reasoning,
         max_output_tokens=max_output_tokens,
+        data_policy=policy,
+        endpoint=approved_endpoint(config, resolved_ref),
     )

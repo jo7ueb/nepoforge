@@ -67,24 +67,26 @@ class TestLifecycle(IsolatedEnv):
         self.assertEqual(cli.main(["update", "--no-projects"]), 0)
 
     def test_primary_check_reports_recommendation_without_writes(self) -> None:
+        self.approve_project_policy(self.home, "private")
         recommendations = {
             "economy": "fastmetal/japan-glm-5.3-flash",
             "balanced": "fastmetal/japan-deepseek-v4.1-flash-1017",
             "performance": "fastmetal/japan-deepseek-v4.1-flash-1017",
         }
         for name, model in recommendations.items():
+            route = ["--endpoint", "https://api.fastmetal.ai/v1", "--upstream-model", model.split("/", 1)[1]]
             with self.subTest(profile=name), unittest.mock.patch("nepoforge.budget.expired_price", return_value=False):
                 with contextlib.redirect_stdout(io.StringIO()) as output:
                     self.assertEqual(cli.main(["profile", "show", name]), 0)
-                    self.assertEqual(cli.main(["profile", "check-primary", "--profile", name, "--model", model]), 0)
+                    self.assertEqual(cli.main(["profile", "check-primary", "--profile", name, "--model", model, *route]), 0)
                 self.assertIn(f"primary_model (recommended): {model}", output.getvalue())
                 with self.assertRaises(SystemExit):
-                    cli.main(["profile", "check-primary", "--profile", name, "--model", "fastmetal/beam-1.0"])
+                    cli.main(["profile", "check-primary", "--profile", name, "--model", "fastmetal/beam-1.0", *route])
         with (
             unittest.mock.patch("nepoforge.budget.expired_price", return_value=True),
             self.assertRaises(SystemExit),
         ):
-            cli.main(["profile", "check-primary", "--model", recommendations["balanced"]])
+            cli.main(["profile", "check-primary", "--model", recommendations["balanced"], *route])
         self.assertFalse(store.manifest_path().exists())
 
     def test_full_cycle(self) -> None:

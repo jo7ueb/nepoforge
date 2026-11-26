@@ -31,5 +31,6 @@ nepoforge = [
     "data/agents/*.md",
     "data/commands/*.md",
     "data/profiles/*.json",
+    "data/model-routes.json",
     "data/templates/*.jsonc",
 ]
