@@ -141,6 +141,8 @@ class RuntimeGuard:
             return
         self._active_sessions.add(session_id)
         self.snapshots.setdefault(session_id, UsageSnapshot())
+        if self.is_latched:
+            self._dispatch_interrupt(session_id)
 
     def reserve_request(self, session_id: str, estimate_yen: Decimal) -> tuple[bool, str]:
         """送信前に要求の保守的見積りを予約し、既存予約は置換せず累積する。"""
@@ -240,6 +242,10 @@ class RuntimeGuard:
                     self.accounting_complete = False
                     self._latch("invalid estimated cost")
                     return
+            if not estimated.is_finite():
+                self.accounting_complete = False
+                self._latch("invalid estimated cost")
+                return
             if estimated < 0:
                 self.accounting_complete = False
                 self._latch("negative estimated cost")
@@ -362,17 +368,22 @@ class RuntimeGuard:
         self.is_latched = True
         self.latch_reason = reason
         for session_id in sorted(self._active_sessions):
-            if self.dispatcher is None:
-                self.interrupt_results[session_id] = "not_configured"
-                continue
-            try:
-                self.dispatcher.interrupt_session(session_id)
-            except Exception:
-                # One failed request must not prevent dispatch to other sessions.
-                self.interrupt_results[session_id] = "error"
-            else:
-                # Dispatcher acceptance is not proof that OpenCode stopped the run.
-                self.interrupt_results[session_id] = "requested"
+            self._dispatch_interrupt(session_id)
+
+    def _dispatch_interrupt(self, session_id: str) -> None:
+        if session_id in self.interrupt_results:
+            return
+        if self.dispatcher is None:
+            self.interrupt_results[session_id] = "not_configured"
+            return
+        try:
+            self.dispatcher.interrupt_session(session_id)
+        except Exception:
+            # One failed request must not prevent dispatch to other sessions.
+            self.interrupt_results[session_id] = "error"
+        else:
+            # Dispatcher acceptance is not proof that OpenCode stopped the run.
+            self.interrupt_results[session_id] = "requested"
 
 
 def message_usage_from_api(session_id: str, message: dict[str, Any]) -> MessageUsage:

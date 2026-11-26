@@ -151,6 +151,16 @@ class TestRuntimeGuard(unittest.TestCase):
         self.assertEqual(dispatcher.calls, ["a", "b"])
         self.assertEqual(guard.interrupt_results, {"a": "error", "b": "requested"})
 
+    def test_session_registered_after_latch_is_interrupted_once(self):
+        dispatcher = MockDispatcher()
+        guard = RuntimeGuard(Decimal("10"), dispatcher=dispatcher)
+        guard.register_session("parent")
+        guard.stop("provider budget error")
+        guard.register_session("child")
+        guard.register_session("child")
+        self.assertEqual(dispatcher.calls, ["parent", "child"])
+        self.assertEqual(guard.interrupt_results["child"], "requested")
+
     def test_repeated_failure_latches_and_does_not_reset(self):
         guard = RuntimeGuard(Decimal("10"), failure_threshold=3)
         self.assertFalse(guard.record_failure("same-edit-failure"))
@@ -175,6 +185,14 @@ class TestRuntimeGuard(unittest.TestCase):
                 guard.update_usage("s1", [message(**values)])
                 self.assertTrue(guard.is_latched)
                 self.assertFalse(guard.accounting_complete)
+
+    def test_direct_usage_update_rejects_non_finite_estimated_cost(self):
+        for amount in (Decimal("NaN"), Decimal("Infinity")):
+            guard = RuntimeGuard(Decimal("10"))
+            guard.update_usage("s1", [message(estimated_cost_yen=amount)])
+            self.assertTrue(guard.is_latched)
+            self.assertFalse(guard.accounting_complete)
+            self.assertIn("invalid estimated cost", guard.latch_reason or "")
 
 
 if __name__ == "__main__":

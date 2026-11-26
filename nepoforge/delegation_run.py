@@ -301,6 +301,22 @@ def evaluate_run(
             runtime_guard.record_observation_failure("primary usage accounting incomplete")
         if budget_error:
             runtime_guard.stop("provider budget error")
+        valid_fingerprints = {
+            "oldstring-mismatch", "permission-denied", "invalid-arguments",
+            "transport-error", "tool-error", "provider-budget-error",
+        }
+        for tid, rows in grouped.items():
+            for attempt in rows:
+                fingerprint = attempt.get("failure_fingerprint")
+                if fingerprint is None:
+                    continue
+                if fingerprint not in valid_fingerprints:
+                    runtime_guard.record_observation_failure("invalid failure fingerprint")
+                elif fingerprint == "provider-budget-error":
+                    budget_error = True
+                    runtime_guard.stop("provider budget error")
+                else:
+                    runtime_guard.record_failure(fingerprint)
         for tid, rows in grouped.items():
             if executors.get(tid) != "agent":
                 continue
@@ -323,19 +339,6 @@ def evaluate_run(
                     runtime_guard.record_observation_failure(
                         f"completed session has no usage messages: {session_id}"
                     )
-                fingerprint = attempt.get("failure_fingerprint")
-                if fingerprint is not None:
-                    if fingerprint not in {
-                        "oldstring-mismatch", "permission-denied",
-                        "invalid-arguments", "transport-error", "tool-error",
-                        "provider-budget-error",
-                    }:
-                        runtime_guard.record_observation_failure("invalid failure fingerprint")
-                    elif fingerprint == "provider-budget-error":
-                        budget_error = True
-                        runtime_guard.stop("provider budget error")
-                    else:
-                        runtime_guard.record_failure(fingerprint)
 
     accepted: set[str] = set()
     running: set[str] = set()

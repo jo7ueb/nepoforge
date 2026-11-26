@@ -79,6 +79,43 @@ class DelegationRunTests(unittest.TestCase):
         self.assertFalse(state.report["paid_launch_allowed"])
         self.assertTrue(state.report["runtime"]["guard_state"]["accounting_complete"])
 
+    def test_provider_budget_fingerprint_stops_primary_executor_attempt(self):
+        from nepoforge.runtime_guard import RuntimeGuard
+
+        model = "fastmetal/gemma-4-26b-a4b-it"
+        document = {
+            "run_id": "r", "plan_sha256": "h", "started_ms": 1, "as_of_ms": 3,
+            "budget_error": False,
+            "primary": {
+                "session_id": "parent", "spent_yen": 0, "reserved_yen": 0,
+                "outcome": "running", "messages": [{
+                    "id": "p1", "session_id": "parent", "created_ms": 2,
+                    "agent": "build",
+                    "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it"},
+                    "tokens": {"input": 1000, "output": 0, "cache": {}},
+                }],
+            },
+            "attempts": [{
+                "task_id": "T", "attempt": 1, "session_id": "parent",
+                "started_ms": 2, "ended_ms": None, "model": model,
+                "outcome": "running", "messages": [],
+                "failure_fingerprint": "provider-budget-error",
+            }],
+        }
+        guard = RuntimeGuard(Decimal("100"))
+        state = evaluate_run(
+            document, run_id="r", plan_sha256="h", tasks=[PlannedTask("T", "explore")],
+            executors={"T": "primary"}, resolutions={}, primary_model=model,
+            runtime_guard=guard,
+        )
+        self.assertTrue(state.provider_budget_error)
+        self.assertTrue(state.runtime_latched)
+        self.assertFalse(state.report["paid_launch_allowed"])
+        self.assertEqual(
+            state.report["runtime"]["guard_state"]["stop_reason"],
+            "provider budget error",
+        )
+
     def test_digest_mismatch_rejected(self):
         doc = {"run_id": "r", "plan_sha256": "wrong"}
         with self.assertRaises(ValueError):
