@@ -1,0 +1,44 @@
+name: 作業 Issue
+description: 作業内容・要求・完了条件を記録する
+title: ""
+labels: []
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        タイトルには作業内容だけを書き、`[P1]`・`[Bug]`・`[Phase 2]` などの管理情報を含めないでください。既存ラベルで優先度・必須度・分類を、Milestone で開発フェーズ・到達目標を設定してください。着手順・進捗は Projects で管理します。判断できない分類は推測で設定しないでください。
+  - type: textarea
+    id: background
+    attributes:
+      label: 背景・目的
+      description: なぜこの作業が必要か、達成したいことを記載してください。
+      placeholder: 背景と目的
+    validations:
+      required: true
+  - type: textarea
+    id: requirements
+    attributes:
+      label: 要求事項
+      description: 作業内容、制約、関連 Issue 等を記載してください。
+      placeholder: |
+        - ...
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 完了条件
+      description: 完了を確認できる条件を列挙してください。
+      placeholder: |
+        - [ ] ...
+    validations:
+      required: true
+  - type: textarea
+    id: dependencies
+    attributes:
+      label: 依存・関連
+      description: 関連 Issue、前提条件、依存関係を記載してください（なければ「なし」）。
+      placeholder: なし
+    validations:
+      required: false
