@@ -6,6 +6,7 @@ API 課金なし。純粋関数の判定と、provider 予算超過時の扱い�
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 from nepoforge.budget import (
     PRICE_BASIS,
@@ -47,6 +48,14 @@ class TestEstimateCost(unittest.TestCase):
 
 
 class TestDecideLaunch(unittest.TestCase):
+    def test_deepseek_japan_promotional_price_expires(self) -> None:
+        estimate = _est("fastmetal/japan-deepseek-v4.1-flash-1017", retries=1)
+        state = BudgetState(limit_yen=100)
+        self.assertTrue(decide_launch(state, estimate, on_date=date(2026, 12, 4)).allowed)
+        decision = decide_launch(state, estimate, on_date=date(2026, 12, 5))
+        self.assertFalse(decision.allowed)
+        self.assertIn("price expired", decision.reason)
+
     def test_within_budget_allowed(self) -> None:
         state = BudgetState(limit_yen=LIMIT, spent_yen=10.0)
         d = decide_launch(state, _est())
@@ -86,6 +95,18 @@ class TestDecideLaunch(unittest.TestCase):
         self.assertFalse(
             decide_launch(BudgetState(limit_yen=0.4031), _est()).allowed
         )
+
+    def test_tiny_estimate_rounds_up_and_fractional_spend_counts(self) -> None:
+        estimate = LaunchEstimate("fastmetal/llama-3.1-8b-instruct", 1, 1)
+        self.assertEqual(estimate_cost_yen(estimate), 0.0001)
+        self.assertFalse(decide_launch(BudgetState(limit_yen=0), estimate).allowed)
+        self.assertFalse(
+            decide_launch(BudgetState(limit_yen=0.4032, reserved_yen=0.00001), _est()).allowed
+        )
+
+    def test_paid_launch_rejects_zero_token_estimate(self) -> None:
+        estimate = LaunchEstimate("fastmetal/llama-3.1-8b-instruct", 0, 0)
+        self.assertFalse(decide_launch(BudgetState(limit_yen=LIMIT), estimate).allowed)
 
     def test_provider_budget_error_stops_everything(self) -> None:
         # 予算残高に余裕があっても、超過検知後は新規起動を拒否する

@@ -1,0 +1,30 @@
+{
+  "fastmetal/llama-3.2-3b-instruct": {
+    "no_training": true, "retention": "zero", "destination": null,
+    "approval_ref": "https://fastmetal.jp/models/meta-llama/llama-3-2-3b-instruct", "verified_on": "2026-11-26"
+  },
+  "fastmetal/glm-4.7-flash": {
+    "no_training": true, "retention": "zero", "destination": "global",
+    "approval_ref": "https://fastmetal.jp/models/z-ai/glm-4-7-flash", "verified_on": "2026-11-26"
+  },
+  "fastmetal/gpt-oss-20b": {
+    "no_training": true, "retention": null, "destination": "global",
+    "approval_ref": "https://fastmetal.jp/models/openai/gpt-oss-20b", "verified_on": "2026-11-26"
+  },
+  "fastmetal/gpt-oss-120b": {
+    "no_training": true, "retention": null, "destination": null,
+    "approval_ref": "https://fastmetal.jp/models/openai/gpt-oss-120b", "verified_on": "2026-11-26"
+  },
+  "fastmetal/gemma-4-26b-a4b-it": {
+    "no_training": true, "retention": null, "destination": "global",
+    "approval_ref": "https://fastmetal.jp/models/google/gemma-4-26b-a4b-it", "verified_on": "2026-11-26"
+  },
+  "fastmetal/japan-glm-5.3-flash": {
+    "no_training": true, "retention": null, "destination": "japan",
+    "approval_ref": "https://fastmetal.jp/models/z-ai/glm-5-3-flash-japan", "verified_on": "2026-11-26"
+  },
+  "fastmetal/japan-deepseek-v4.1-flash-1017": {
+    "no_training": true, "retention": "zero", "destination": "japan",
+    "approval_ref": "https://fastmetal.jp/models/deepseek/japan-deepseek-v4-1-flash-1017", "verified_on": "2026-11-26"
+  }
+}

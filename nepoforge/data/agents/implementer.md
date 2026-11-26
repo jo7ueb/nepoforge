@@ -1,7 +1,7 @@
 ---
 description: 設計に基づき実装・修正・テストを行う。スコープを指示された Issue に限定する。
 mode: subagent
-model: fastmetal/beam-1.0
+model: fastmetal/gemma-4-26b-a4b-it
 permissions:
   - action: subagent
     resource: "*"

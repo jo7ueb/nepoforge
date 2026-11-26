@@ -137,9 +137,29 @@ nepoforge profile derive          # 派生定義 (agents/nf-<role>-<slug>.md) �
 
 `profile derive` は、プロファイルの `task_rules` が参照する (役割, モデル) の組合せのうち役割既定と異なるものについて、元の役割定義の `model:` 行だけを差し替えた派生エージェント定義 (`nf-<role>-<slug>`) を生成します。権限は元の役割から複製され、モデルを変えても拡大しません。生成物は再生成可能なため削除・上書きの対象は内容が生成規則と一致するものに限られます。既存の非管理ファイルは上書きしません (`--force` でバックアップ後に上書き)。
 
+`/nfgo` は同梱 3 プロファイルすべてで、定型抽出・分類は GPT OSS 20B、通常の末端実装・読解・レビューは Gemma 4 に割り当てます。統合判断は economy / balanced が GLM Flash Japan、performance が DeepSeek Flash Japan を基本とし、balanced / performance の高度な専門分析には GPT OSS 120B のルールもあります。候補は必要能力・文脈長・データ条件で絞ります。`plan ready --json` はモデルと起動先、推論設定、出力の見積り上限、バッチ内の予算予約額を返します。`profile show` の役割モデルは、通常の役割エージェントの既定値です。
+
+### プロジェクトの Data Policy
+
+モデルプロファイルと独立に設定します。未設定は `confidential` です。
+
+| 値 | 学習利用 | 提供元での保持 |
+| --- | --- | --- |
+| `open` | 許容（不明も可） | 許容（不明も可） |
+| `private` | 学習不使用の確認が必須 | 許容（不明も可） |
+| `confidential` | 学習不使用の確認が必須 | ゼロ保持の確認が必須 |
+
+変更は利用者が行います。リポジトリ直下の `.nepoforge.json` に `{"data_policy":"private"}` と宣言し、`$XDG_CONFIG_HOME/nepoforge/project-policies.json`（通常は `~/.config/nepoforge/project-policies.json`）に ` {"/絶対パス/リポジトリ":"private"}` と承認した値を記録します。リポジトリの宣言だけでは緩和できません。無効な値や承認との不一致は停止します。タスクには、実際に送る全コンテキストに応じて、これより厳しい値だけを指定できます。`open` でも認証情報・個人情報・第三者の秘密等を送る許可にはなりません。
+
+`confidential` では全プロファイルで、末端作業を GLM 4.7 Flash、ツール不要の定型抽出を Llama 3.2 3B に割り当てます。抽出にツールが必要なら GLM 4.7 Flash を使います。`economy` では `confidential` のとき、Primary の推奨と統合判断の割り当てが DeepSeek Flash Japan になります。
+
+**最初の送信前に確認:** `nepoforge profile show` で推奨を確認し、OpenCode の UI またはセッション API で実際に選択したモデルを照合します。有効設定の `baseURL` と提供元へ送るモデル ID（`modelID` 上書きがなければ選択した ID）を確認し、`nepoforge profile check-primary --model <provider/model> --endpoint <baseURL> --upstream-model <ID>` を実行します。手動で子を起動するときは同じ引数の `profile check-route` を使います。承認済みルートの候補がない場合は停止します。結果はローカル照合であり、OpenCode の別経路での直接起動や、開始済みセッションの初回送信を防げません。管理外セッション、送信後の設定変更、同じ OS 権限による変更を防ぐ境界ではありません。
+
+旧同梱プロファイルからは `nepoforge update --dry-run` で役割定義・派生定義の差分を確認できます。FastMetal の旧管理ブロックを使っている場合、`nepoforge init --provider fastmetal --dry-run` で OSS モデルと推論設定の追加差分を確認し、同じコマンドから `--dry-run` を外すとバックアップ付きで反映します。既存ブロックが利用者定義・改変済みの場合は配布テンプレートを参照し、必要なモデル設定を手動で追加してください。
+
 `subagent` 権限に明示的な許可リストを設定している場合は、派生 ID を使うために `nf-*` を allow に追加してください (権限設定は CLI が書き換えません)。並列上限はプロファイルの `constraints.max_parallel` (未設定時 10) で調整します。
 
-個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。プロジェクト固有の上書きは、そのリポジトリの設定で `agents.<id>.model` を定義します (プロジェクト設定がグローバル定義に上書きマージされるため)。
+個人用の上書きは `~/.config/nepoforge/profile.json` を作り `nepoforge profile use local` としてください。候補を省略した旧プロファイルでは、そのプロファイル自身の `roles` が候補になります。`candidates` を明示する場合、ルールと起動に使うモデルをそこに列挙します。プロジェクト固有の `agents.<id>.model` 上書きも OpenCode では有効ですが、`/nfgo` は有効設定が選択結果と異なる委譲を起動しません。
 
 `scripts/switch_profile.py` は旧方式で導入したリポジトリ向けの互換スクリプトです。本リポジトリでは `nepoforge profile use` を使用します。
 

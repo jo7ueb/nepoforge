@@ -1,7 +1,7 @@
 ---
 description: 変更を独立レビューする。読み取り専用で、編集・マージは行わない。
 mode: subagent
-model: fastmetal/japan-glm-5.3-flash
+model: fastmetal/gemma-4-26b-a4b-it
 permissions:
   - action: "*"
     resource: "*"
@@ -33,7 +33,7 @@ permissions:
 
 ## 職務
 
-- 変更差分を確認し、正確性・回帰・セキュリティ・既存規約 (AGENTS.md) 遵守を評価する。
+- TaskSpec で観点が指定されたら、その観点と受入条件に絞って確定差分を評価する。指定がない通常のレビューでは、変更に応じて正確性・回帰・セキュリティ・既存規約 (AGENTS.md) 遵守を評価する。
 - 指摘は重要度順に、ファイルと行の参照を付けて列挙する。
 - 「承認」「修正依頼」のいずれかと根拠を明示する。
 

@@ -148,20 +148,28 @@ roles のみの既存プロファイルは**無変更でそのまま動く** (`b
 3. `task_rules`: 配列。`when` は空でなく、キーは `{role, capabilities, complexity, risk, concern}` の部分集合。`complexity` / `risk` は `low|medium|high`、`role` は 5 役、`capabilities` は文字列の配列。各ルールの `model` は有効候補に含まれること (含まれない場合はロード時にエラー — 実行時ではなく設定時に壊れたルールを検出する)。
 4. `constraints.providers`: 配列。各要素は `id` (文字列)・`approved` (真偽)・`destination`・`retention` (文字列) を必須とする。候補の provider は `approved: true` の provider に含まれること。
 5. `constraints.max_parallel`: 1 以上の整数。
-6. **roles の値は常に有効候補に含める** (暗黙追加)。`candidates` 省略時の既定 = 同梱 3 プロファイル roles の和集合 + local の roles の値 (0005 §5.2 の初期定義と一致 — §3.1 事実 4 の 5 モデル)。`candidates` 明示時は roles ⊆ candidates を検証しない代わりに、roles の値を候補に union する (ローカルで新モデルを roles に足すだけで承認済み候補になる。承認の主体は「プロファイルに書いた人間」)。
+6. **候補は現行プロファイル内に限定する** (#70)。`candidates` 明示時はその一覧だけを候補にする。省略時は現行プロファイル自身の `roles` のモデルだけを候補にする。
 7. `local` プロファイル (`~/.config/nepoforge/profile.json`): roles 必須は現行どおり。optional キーも同一スキーマで検証する。省略時は既定値 (§3.3 規則 6)。
 
 ### 3.4 既定値の確定
 
 | キー | 省略時の既定 |
 | --- | --- |
-| `candidates` | 同梱 3 プロファイル roles の和集合 + local の roles の値 (capabilities / context_tokens は null = 情報なし) |
+| `candidates` | 現行プロファイルの `roles` の値 (capabilities / context_tokens は null = 情報なし) |
 | `task_rules` | 空配列 (Resolver は 明示指定 → 役割デフォルト の 2 段で動く) |
 | `constraints.providers` | `[{"id": "fastmetal", "approved": true, ...}]` (同梱プロファイルに登場する provider の集合) |
 | `constraints.max_parallel` | 10 (0005 §7.5。2026-11-25 の人間判断で 3 から変更) |
 | `constraints.budget` | `{ "per_task": null, "note": "..." }` |
 
 ## 4. Model Resolver
+
+**#70 の適用規則（下記の当初案より優先）**: Data Policy はモデルプロファイルから独立し、[利用者がプロジェクト単位に承認](../../README.md#プロジェクトの-data-policy)する。未設定は `confidential`、タスクは厳格化のみ。`open` は学習・保持が不明でも可、`private` は学習不使用が必要、`confidential` はさらにゼロ保持が必要。ルートごとの根拠・確認日・独立した属性は `nepoforge/data/model-routes.json` に置く。提供元の承認済み `endpoint`・必要能力・文脈長・価格・予算は別に確認する。
+
+ルーティングには `responsibility` (`leaf` / `integration`)、`task_kind`、既存の複雑度・リスク・能力条件を使う。高難度・高リスクだけでは末端を昇格させず、一致した規則がすべて不適格なら役割既定には戻さない。計画 JSON のモデル・推論設定の上書きは拒否する。`primary_model` は起動前照合用の推奨値。Primary・手動起動・委譲では選択モデルと提供元の実モデル ID、送信先を照合する。この照合は設定やセッションを変更せず、先に送信された入力や管理外の起動を保護しない。
+
+2026-11-26 の FastMetal 公開資料による判断: [GPT OSS 20B](https://fastmetal.jp/models/openai/gpt-oss-20b) と [120B](https://fastmetal.jp/models/openai/gpt-oss-120b) は学習不使用・保持未確認のため `open` / `private` では適格になり得るが、`confidential` では不適格。機密の末端には学習不使用・ゼロ保持を確認した [GLM 4.7 Flash](https://fastmetal.jp/models/z-ai/glm-4-7-flash)、ツール不要の抽出には [Llama 3.2 3B](https://fastmetal.jp/models/meta-llama/llama-3-2-3b-instruct) を使う。厳密なスキーマ出力とゼロ保持の両方が確認できる同梱ルートは [DeepSeek Flash 1017 Japan](https://fastmetal.jp/models/deepseek/japan-deepseek-v4-1-flash-1017)。同国内版の割引は 2026-12-04 (日本時間) まで。終了後は現在単価が確認されるまで同ルートの起動判定を拒否する。
+
+[推論制御の資料](https://fastmetal.jp/docs/api/reasoning) に基づき 20B は低強度、Gemma は思考オフ、国内上位モデルと 120B はプロバイダー既定。ルールの `max_output_tokens` は回答と推論を含む**タスク全体の予算見積り**を抑える。OpenCode の `limit.output` はモデルのリクエスト設定であり、セッション全体のトークン数、再試行や実支出は強制できない。`plan ready` は管理定義と見積りを確認し、実行時の有効設定・実行モデルは `/nfgo` が照合する。
 
 ### 4.1 配置と関数シグネチャ (案)
 
@@ -509,6 +517,3 @@ nfgo.md への追記は **直書き禁止ルールを遵守**する (モデル�
 | (5) 適格条件 (送信先・保持・コンテキスト・費用上限) | §3.2 (`candidates` / `constraints`)・§4.2 step 1 |
 | (6) AGENTS / architecture / ROADMAP / 配布手順の整合 | §2.2 (R7–R9)・§8.1 |
 | (7) 細粒度分解方針の先行反映・0005 論理フィールド維持 | §0・§2.2・§7 |
-
-
-

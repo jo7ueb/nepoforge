@@ -6,6 +6,7 @@ XDG_CONFIG_HOME / XDG_STATE_HOME を一時ディレクトリに向けて、
 
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -58,3 +59,9 @@ class IsolatedEnv(unittest.TestCase):
 
     def cd(self, path: Path) -> None:
         os.chdir(path)
+
+    def approve_project_policy(self, root: Path, policy: str) -> None:
+        (root / ".nepoforge.json").write_text(json.dumps({"data_policy": policy}), encoding="utf-8")
+        approvals = self.xdg_config / "nepoforge/project-policies.json"
+        approvals.parent.mkdir(parents=True, exist_ok=True)
+        approvals.write_text(json.dumps({str(root.resolve()): policy}), encoding="utf-8")

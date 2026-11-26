@@ -14,7 +14,7 @@ import json
 import re
 from pathlib import Path
 
-from . import store
+from . import data_policy, store
 from .store import NepoforgeError
 
 REQUIRED_ROLES = store.USER_AGENT_IDS
@@ -180,6 +180,9 @@ class Candidate:
     destination: str | None = None
     retention: str | None = None
     approval_ref: str | None = None
+    no_training: bool | None = None
+    reasoning: str | None = None
+    verified_on: str | None = None
 
 
 @dataclass(frozen=True)
@@ -187,6 +190,7 @@ class TaskRule:
     when: dict[str, Any] = field(default_factory=dict)
     model: str = ""
     note: str | None = None
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -196,6 +200,7 @@ class ProviderConstraint:
     retention: str | None = None
     approved: bool = False
     approval_ref: str | None = None
+    endpoint: str | None = None
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
@@ -245,35 +250,11 @@ class ProfileConfig:
     candidates: tuple[Candidate, ...] = field(default_factory=tuple)
     task_rules: tuple[TaskRule, ...] = field(default_factory=tuple)
     constraints: Constraints = field(default_factory=Constraints)
+    primary_model: ModelRef | None = None
+    primary_model_by_policy: dict[str, ModelRef] = field(default_factory=dict)
 
-
-def _default_candidate_models(name: str) -> set[str]:
-    models: set[str] = set()
-    for p in profile_dir().glob("*.json"):
-        try:
-            data = _json.loads(p.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            continue
-        if not isinstance(data, dict):
-            continue
-        roles = data.get("roles")
-        if isinstance(roles, dict):
-            for m in roles.values():
-                if isinstance(m, str):
-                    models.add(m)
-    lp = store.local_profile_path()
-    if lp.is_file():
-        try:
-            data = _json.loads(lp.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                roles = data.get("roles")
-                if isinstance(roles, dict):
-                    for m in roles.values():
-                        if isinstance(m, str):
-                            models.add(m)
-        except (OSError, ValueError):
-            pass
-    return models
+    def primary_for(self, policy: str) -> ModelRef | None:
+        return self.primary_model_by_policy.get(policy, self.primary_model)
 
 
 def load_profile_config(name: str) -> ProfileConfig:
@@ -330,10 +311,11 @@ def load_profile_config(name: str) -> ProfileConfig:
         raw_providers = [
             {
                 "id": "fastmetal",
-                "destination": "FastMetal 国内ホスト",
-                "retention": "学習利用なし",
+                "destination": "FastMetal API (ホスト条件はモデル別)",
+                "retention": "モデル別に確認",
                 "approved": True,
                 "approval_ref": "0001 §3 / #52 PR",
+                "endpoint": "https://api.fastmetal.ai/v1",
             }
         ]
     if not isinstance(raw_providers, list):
@@ -357,6 +339,9 @@ def load_profile_config(name: str) -> ProfileConfig:
         approval_ref = pr.get("approval_ref")
         if approval_ref is not None and not isinstance(approval_ref, str):
             raise NepoforgeError(f"provider 'approval_ref' must be a string: {path}")
+        endpoint = pr.get("endpoint")
+        if endpoint is not None and (not isinstance(endpoint, str) or not endpoint):
+            raise NepoforgeError(f"provider 'endpoint' must be a non-empty string: {path}")
         providers.append(
             ProviderConstraint(
                 id=pid,
@@ -364,6 +349,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 retention=retention,
                 approved=approved,
                 approval_ref=approval_ref,
+                endpoint=endpoint,
             )
         )
     approved_ids = {p.id for p in providers if p.approved}
@@ -397,19 +383,18 @@ def load_profile_config(name: str) -> ProfileConfig:
     candidate_model_strs: set[str] = set()
 
     if raw_candidates is None:
-        for ms in _default_candidate_models(name):
-            try:
-                ref = parse_model(ms)
-            except NepoforgeError:
-                continue
-            fm = format_model(ref)
-            if fm in candidate_model_strs:
-                continue
-            candidate_model_strs.add(fm)
-            candidates.append(
-                Candidate(ref=ref, capabilities=None, context_tokens=None, destination=None, retention=None, approval_ref=None)
-            )
+        # roles のみの旧プロファイルは、選択中の roles を候補とする。
+        refs = dict.fromkeys(parse_model(model) for model in roles.values())
+        candidates = [Candidate(ref=ref) for ref in refs]
+        candidate_model_strs = {format_model(ref) for ref in refs}
     else:
+        routes = {}
+        if path.parent == store.DATA_DIR / "profiles":
+            routes_path = store.DATA_DIR / "model-routes.json"
+            try:
+                routes = _json.loads(routes_path.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                raise NepoforgeError(f"cannot load bundled model routes: {routes_path}") from exc
         for c in raw_candidates:
             if not isinstance(c, dict):
                 raise NepoforgeError(f"candidate entry must be an object: {path}")
@@ -417,6 +402,7 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"candidate 'model' must be a string: {path}")
             ref = parse_model(c["model"])
             fm = format_model(ref)
+            c = c | routes.get(fm, {})
             if fm in candidate_model_strs:
                 raise NepoforgeError(f"duplicate candidate model: {fm} ({path})")
             candidate_model_strs.add(fm)
@@ -438,19 +424,19 @@ def load_profile_config(name: str) -> ProfileConfig:
             ar = c.get("approval_ref", None)
             if ar is not None and not isinstance(ar, str):
                 raise NepoforgeError(f"candidate 'approval_ref' must be a string: {path}")
-            candidates.append(
-                Candidate(ref=ref, capabilities=caps, context_tokens=ct, destination=dest, retention=ret, approval_ref=ar)
-            )
-
-    # roles の値を候補に union
-    for role, model in roles.items():
-        ref = parse_model(model)
-        fm = format_model(ref)
-        if fm not in candidate_model_strs:
-            candidate_model_strs.add(fm)
-            candidates.append(
-                Candidate(ref=ref, capabilities=None, context_tokens=None, destination=None, retention=None, approval_ref=None)
-            )
+            verified_on = c.get("verified_on")
+            if verified_on is not None and not isinstance(verified_on, str):
+                raise NepoforgeError(f"candidate 'verified_on' must be a string: {path}")
+            no_training = c.get("no_training")
+            if no_training is not None and not isinstance(no_training, bool):
+                raise NepoforgeError(f"candidate 'no_training' must be boolean: {path}")
+            reasoning = c.get("reasoning")
+            if reasoning not in (None, "off", "low", "provider_default"):
+                raise NepoforgeError(f"candidate 'reasoning' must be off, low or provider_default: {path}")
+            candidates.append(Candidate(
+                ref=ref, capabilities=caps, context_tokens=ct, destination=dest,
+                retention=ret, approval_ref=ar, no_training=no_training, reasoning=reasoning, verified_on=verified_on,
+            ))
 
     # provider 承認チェック
     for c in candidates:
@@ -464,7 +450,7 @@ def load_profile_config(name: str) -> ProfileConfig:
     if not isinstance(raw_rules, list):
         raise NepoforgeError(f"'task_rules' must be an array: {path}")
     rules: list[TaskRule] = []
-    allowed_when = {"role", "capabilities", "complexity", "risk", "concern"}
+    allowed_when = {"role", "capabilities", "complexity", "risk", "concern", "responsibility", "task_kind", "data_policy"}
     for r in raw_rules:
         if not isinstance(r, dict):
             raise NepoforgeError(f"task_rule entry must be an object: {path}")
@@ -485,6 +471,12 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"task_rule 'capabilities' must be a string array: {path}")
         if "concern" in when and not isinstance(when["concern"], str):
             raise NepoforgeError(f"task_rule 'concern' must be a string: {path}")
+        if "responsibility" in when and when["responsibility"] not in ("leaf", "integration"):
+            raise NepoforgeError(f"task_rule 'responsibility' must be leaf or integration: {path}")
+        if "task_kind" in when and not isinstance(when["task_kind"], str):
+            raise NepoforgeError(f"task_rule 'task_kind' must be a string: {path}")
+        if "data_policy" in when:
+            data_policy.validate(when["data_policy"])
         model = r.get("model")
         if not isinstance(model, str):
             raise NepoforgeError(f"task_rule 'model' must be a string: {path}")
@@ -497,7 +489,25 @@ def load_profile_config(name: str) -> ProfileConfig:
         note = r.get("note", None)
         if note is not None and not isinstance(note, str):
             raise NepoforgeError(f"task_rule 'note' must be a string: {path}")
-        rules.append(TaskRule(when=dict(when), model=model, note=note))
+        max_output_tokens = r.get("max_output_tokens")
+        if max_output_tokens is not None and (type(max_output_tokens) is not int or max_output_tokens < 1):
+            raise NepoforgeError(f"task_rule 'max_output_tokens' must be a positive integer: {path}")
+        rules.append(TaskRule(dict(when), model, note, max_output_tokens))
+
+    primary = data.get("primary_model")
+    primary_model = parse_model(primary) if primary is not None else None
+    if primary_model is not None and format_model(primary_model) not in candidate_model_strs:
+        raise NepoforgeError(f"'primary_model' must be in candidates: {path}")
+    policy_models = data.get("primary_model_by_policy", {})
+    if not isinstance(policy_models, dict):
+        raise NepoforgeError(f"'primary_model_by_policy' must be an object: {path}")
+    primary_model_by_policy = {}
+    for key, value in policy_models.items():
+        policy = data_policy.validate(key)
+        ref = parse_model(value)
+        if format_model(ref) not in candidate_model_strs:
+            raise NepoforgeError(f"'primary_model_by_policy' model must be in candidates: {path}")
+        primary_model_by_policy[policy] = ref
 
     return ProfileConfig(
         name=data.get("name", name) if isinstance(data.get("name"), str) else name,
@@ -505,4 +515,6 @@ def load_profile_config(name: str) -> ProfileConfig:
         candidates=tuple(candidates),
         task_rules=tuple(rules),
         constraints=constraints,
+        primary_model=primary_model,
+        primary_model_by_policy=primary_model_by_policy,
     )

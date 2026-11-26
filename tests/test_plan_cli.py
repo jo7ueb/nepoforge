@@ -5,10 +5,13 @@
 
 from __future__ import annotations
 
+import io
 import json
 import unittest
+from contextlib import redirect_stdout
+from unittest.mock import patch
 
-from nepoforge import cli
+from nepoforge import budget, cli, store
 
 from ._base import IsolatedEnv
 
@@ -56,9 +59,47 @@ class TestPlanReady(IsolatedEnv):
         self.dir = self.home / "work"
         self.dir.mkdir()
         self.tmp = {"dir": self.dir}
-        # 予算ゲートに必要な既定見積り (200k in / 50k out / 再試行 1) で
-        # economy プロファイル (japan-glm-5.3-flash) が許可される上限
+        self.approve_project_policy(self.home, "private")
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(cli.main(["init"]), 0)
         self.limit = 100.0
+
+    def _ready(self, tasks: list[dict], *args: str) -> dict:
+        plan = _write_plan(self.tmp, tasks)
+        output = io.StringIO()
+        with redirect_stdout(output):
+            self.assertEqual(cli.main(["plan", "ready", plan, "--json", *args]), 0)
+        return json.loads(output.getvalue())
+
+    def test_reservations_accumulate_within_and_across_batches(self) -> None:
+        tasks = [
+            {
+                "task_id": f"T{i}", "role": "reviewer",
+                "max_input_tokens": 1000, "max_output_tokens": 0, "retries": 1,
+            }
+            for i in range(1, 4)
+        ]
+        with patch.dict(budget.PRICES, {model: (5000, 0) for model in budget.PRICES}):
+            first = self._ready(tasks, "--limit-yen", "20")
+            self.assertEqual(first["launch"], ["T1", "T2"])
+            self.assertEqual(first["reservations_yen"], {"T1": 10, "T2": 10})
+            self.assertEqual([d["task_id"] for d in first["denied"]], ["T3"])
+
+            # T1 の実績は 8 円。T2 は実行中で、T3 は再判定しても起動できない。
+            second = self._ready(
+                tasks, "--limit-yen", "20", "--accepted", "T1",
+                "--spent-yen", "8", "--running", "T2", "--reserved-yen", "10",
+            )
+            self.assertEqual(second["reservations_yen"], {})
+            self.assertEqual(second["launch"], [])
+            self.assertIn("28.0000", second["denied"][0]["reason"])
+
+            # T2 も 2 円で終了し、実績合計 10 円に精算したら T3 に枠が空く。
+            state = ("--limit-yen", "20", "--accepted", "T1,T2", "--spent-yen", "10")
+            self.assertEqual(self._ready(tasks, *state)["reservations_yen"], {"T3": 10})
+            stopped = self._ready(tasks, *state, "--budget-error")
+            self.assertEqual(stopped["reservations_yen"], {})
+            self.assertIn("already exceeded", stopped["denied"][0]["reason"])
 
     def _plan(self) -> str:
         return _write_plan(
@@ -89,7 +130,7 @@ class TestPlanReady(IsolatedEnv):
         result = json.loads(buf.getvalue())
         self.assertEqual(result["launch"], ["T1"])
         self.assertEqual(result["not_ready"], ["T2"])
-        self.assertEqual(result["resolved"]["T1"], "fastmetal/japan-glm-5.3-flash")
+        self.assertEqual(result["resolved"]["T1"], "fastmetal/gemma-4-26b-a4b-it")
 
     def test_dependent_launches_after_acceptance(self) -> None:
         import contextlib
@@ -113,8 +154,96 @@ class TestPlanReady(IsolatedEnv):
         self.assertEqual(result["profile"], "economy")
         self.assertEqual(result["ready"], ["T2"])
         self.assertEqual(result["launch"], ["T2"])
-        # economy の implementer も japan-glm-5.3-flash に解決される
-        self.assertEqual(result["resolved"]["T2"], "fastmetal/japan-glm-5.3-flash")
+        self.assertEqual(result["resolved"]["T2"], "fastmetal/gemma-4-26b-a4b-it")
+
+    def test_independent_review_bindings_are_generated_and_launchable(self) -> None:
+        tasks = [
+            {
+                "task_id": f"T{i}", "role": "reviewer", "complexity": "low", "risk": risk,
+                "concern": concern, "inputs": {"snapshot": "fixed-diff"},
+                "read_scope": ["nepoforge/cli.py"], "write_scope": [],
+                "capabilities": ["tool_calling"],
+            }
+            for i, (concern, risk) in enumerate(
+                (("requirements", "low"), ("correctness", "low"), ("security", "medium")), 1
+            )
+        ]
+        for profile in ("economy", "balanced", "performance"):
+            with self.subTest(profile=profile):
+                with redirect_stdout(io.StringIO()):
+                    self.assertEqual(cli.main(["profile", "use", profile]), 0)
+                result = self._ready(tasks, "--limit-yen", "100")
+                self.assertEqual(result["launch"], ["T1", "T2", "T3"])
+                for task in tasks:
+                    tid = task["task_id"]
+                    self.assertEqual(result["resolved"][tid], "fastmetal/gemma-4-26b-a4b-it")
+                    self.assertEqual(result["model_resolutions"][tid]["binding"], "reviewer")
+                    self.assertTrue(result["model_resolutions"][tid]["reason"].startswith("task_rule["))
+
+    def test_plan_cannot_override_rule_even_with_spoofed_source(self) -> None:
+        for source in ("coordinator", "human-config", "external"):
+            with self.subTest(source=source):
+                result = self._ready([{
+                    "task_id": "T1", "role": "reviewer", "complexity": "low", "risk": "low",
+                    "model_request": "fastmetal/japan-deepseek-v4.1-flash-1017",
+                    "model_request_source": source,
+                }], "--limit-yen", "100")
+                self.assertEqual(result["launch"], [])
+                self.assertEqual(result["reservations_yen"], {})
+                self.assertIn("untrusted_source", result["denied"][0]["reason"])
+
+    def test_missing_or_modified_binding_does_not_fall_back_or_reserve(self) -> None:
+        tasks = [{
+            "task_id": "T1", "role": "architect", "complexity": "low", "risk": "low",
+            "write_scope": ["docs/example.md"],
+        }]
+        path = store.opencode_dir() / "agents/nf-architect-gemma-4-26b-a4b-it.md"
+        path.unlink()
+        missing = self._ready(tasks, "--limit-yen", "100")
+        self.assertEqual(missing["launch"], [])
+        self.assertEqual(missing["reservations_yen"], {})
+        self.assertIn("binding unavailable", missing["denied"][0]["reason"])
+        path.write_text("model: fastmetal/japan-deepseek-v4.1-flash-1017\n", encoding="utf-8")
+        modified = self._ready(tasks, "--limit-yen", "100")
+        self.assertEqual(modified["launch"], [])
+        self.assertEqual(modified["reservations_yen"], {})
+        self.assertIn("binding differs", modified["denied"][0]["reason"])
+
+    def test_ineligible_leaf_does_not_use_role_default(self) -> None:
+        result = self._ready([{
+            "task_id": "T1", "role": "implementer", "complexity": "low", "risk": "low",
+            "write_scope": ["nepoforge/cli.py"],
+            "capabilities": ["unconfirmed_capability"],
+        }], "--limit-yen", "100")
+        self.assertEqual(result["resolved"], {})
+        self.assertEqual(result["launch"], [])
+        self.assertIn("task_rule_ineligible", result["denied"][0]["reason"])
+
+    def test_denied_cost_does_not_consume_next_tasks_budget(self) -> None:
+        tasks = [
+            {"task_id": "T1", "role": "reviewer", "max_input_tokens": 2000},
+            {"task_id": "T2", "role": "reviewer", "max_input_tokens": 1000},
+        ]
+        with patch.dict(budget.PRICES, {"fastmetal/gemma-4-26b-a4b-it": (10_000, 0)}):
+            result = self._ready(tasks, "--limit-yen", "10", "--retries", "0")
+        self.assertEqual(result["launch"], ["T2"])
+        self.assertEqual(result["reservations_yen"], {"T2": 10})
+
+    def test_extraction_budget_cannot_override_output_policy(self) -> None:
+        task = {
+            "task_id": "T1", "role": "explore", "task_kind": "extraction",
+            "responsibility": "leaf", "complexity": "low", "risk": "low",
+            "max_input_tokens": 1000,
+        }
+        result = self._ready([task], "--limit-yen", "100", "--retries", "0")
+        self.assertEqual(result["launch"], ["T1"])
+        self.assertEqual(result["resolved"]["T1"], "fastmetal/gpt-oss-20b")
+        self.assertEqual(result["model_resolutions"]["T1"]["reasoning"], "low")
+        self.assertEqual(result["model_resolutions"]["T1"]["max_output_tokens"], 2048)
+        self.assertEqual(result["reservations_yen"]["T1"], 0.0533)
+        denied = self._ready([{**task, "max_output_tokens": 2049}], "--limit-yen", "100")
+        self.assertEqual(denied["reservations_yen"], {})
+        self.assertIn("exceeds task policy", denied["denied"][0]["reason"])
 
     def test_unset_limit_denies_all(self) -> None:
         import contextlib

@@ -16,6 +16,7 @@ from .store import NepoforgeError
 from . import profiles
 
 BUILTIN_AGENT_IDS = {"build", "plan", "general", "explore", "title", "summary", "compaction"}
+LEGACY_PREMIUM_MODELS = ("fastmetal/beam-1.0", "fastmetal/kimi-k3.1-pro", "fastmetal/glm-5.3")
 
 
 class DeriveItem:
@@ -95,8 +96,10 @@ def derive_plan(
     role: str | None = None,
     model: Any = None,
     target_dir: Any = None,
+    *,
+    previous_roles: dict[str, str] | None = None,
 ) -> list[DeriveItem]:
-    """対象ペアを決定し、各派生定義の計画 (ok/write/conflict) を返す。"""
+    """対象ペアの計画を返す。旧管理定義から再現できる場合のみ更新を許す。"""
     if target_dir is None:
         target_dir = store.opencode_dir()
     target_dir = Path(target_dir)
@@ -113,8 +116,6 @@ def derive_plan(
         if role not in store.USER_AGENT_IDS:
             raise NepoforgeError(f"unknown role: {role}")
         candidate_strs = {profiles.format_model(c.ref) for c in config.candidates}
-        for r, m in config.roles.items():
-            candidate_strs.add(m)
         if model_str not in candidate_strs:
             raise NepoforgeError(f"model not in profile candidates: {model_str}")
         key = (role, model_str)
@@ -142,8 +143,8 @@ def derive_plan(
     # 役割既定と同一のものは除外
     filtered: list[tuple[str, str]] = []
     for r, m in pairs:
-        default = config.roles.get(r) if isinstance(config.roles, dict) else None
-        if default == m:
+        default = config.roles.get(r)
+        if default and profiles.parse_model(default) == profiles.parse_model(m):
             continue
         filtered.append((r, m))
 
@@ -171,6 +172,10 @@ def derive_plan(
             current = target_file.read_text(encoding="utf-8")
             if current == expected_text:
                 state = "ok"
+            elif previous_roles and r in previous_roles and current == profiles.apply_to_agent(
+                r, previous_roles[r], model_str
+            ):
+                state = "update"
             else:
                 state = "conflict"
         items.append(
@@ -197,7 +202,7 @@ def safe_texts() -> set[str]:
     task_rules のモデルは candidates にも自動で入るが、明示的に取り込んで
     おく (生成・削除の判定基準が candidates の作り方に依存しないようにする)。
     """
-    models: set[str] = set()
+    models = set(LEGACY_PREMIUM_MODELS)
     for name in profiles.available_profiles():
         try:
             config = profiles.load_profile_config(name)
@@ -217,3 +222,20 @@ def safe_texts() -> set[str]:
             except NepoforgeError:
                 continue
     return texts
+
+
+def legacy_premium_paths(target_dir: Path, previous_roles: dict[str, str]) -> list[Path]:
+    """旧同梱構成から生成できる未改変ファイルだけを移行対象とする。"""
+    retired = []
+    for role in store.USER_AGENT_IDS:
+        for model in LEGACY_PREMIUM_MODELS:
+            path = target_dir / "agents" / f"{agent_id_for(role, model)}.md"
+            if path.is_symlink() or not path.is_file():
+                continue
+            current = path.read_bytes()
+            if current == derive_text(role, model).encode("utf-8") or (
+                role in previous_roles
+                and current == profiles.apply_to_agent(role, previous_roles[role], model).encode("utf-8")
+            ):
+                retired.append(path)
+    return retired

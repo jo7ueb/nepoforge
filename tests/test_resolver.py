@@ -7,7 +7,7 @@ import dataclasses
 
 from nepoforge import profiles, resolver
 from nepoforge.profiles import ModelRef, Candidate, ProfileConfig, TaskRule, Constraints, ProviderConstraint, Budget
-from nepoforge.resolver import TaskInput, resolve
+from nepoforge.resolver import TaskInput
 from nepoforge.store import NepoforgeError
 
 
@@ -26,9 +26,13 @@ def _cfg_with_rules(task_rules=(), candidates=None, roles=None):
             Candidate(ref=ModelRef("fastmetal", "beam-1.0", None), capabilities=("code",), context_tokens=2000),
             Candidate(ref=ModelRef("fastmetal", "kimi-k3.1-pro", None), capabilities=("code", "reasoning"), context_tokens=4000),
         )
-    providers = (ProviderConstraint(id="fastmetal", approved=True, destination="d", retention="r"),)
+    providers = (ProviderConstraint(id="fastmetal", approved=True, destination="d", retention="r", endpoint="https://api.fastmetal.ai/v1"),)
     constraints = Constraints(providers=providers, max_parallel=3, budget=Budget(per_task=None, note="n"))
     return ProfileConfig(name="t", roles=roles, candidates=candidates, task_rules=tuple(task_rules), constraints=constraints)
+
+
+def resolve(task, config):
+    return resolver.resolve(task, config, project_policy="open")
 
 
 class TestResolve(unittest.TestCase):
@@ -135,14 +139,13 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(res.reason, "role_default")
         self.assertEqual(res.resolved_model, ModelRef("fastmetal", "beam-1.0", None))
 
-    def test_capabilities_filter_null_not_excluded(self) -> None:
-        # candidate with capabilities None should not be excluded
+    def test_unknown_capability_does_not_satisfy_requirement(self) -> None:
         cfg = _cfg_with_rules(candidates=(
             Candidate(ref=ModelRef("fastmetal", "japan-glm-5.3-flash", None), capabilities=None, context_tokens=None),
         ), roles={"implementer": "fastmetal/japan-glm-5.3-flash"})
         ti = TaskInput(task_id="t1", role="implementer", capabilities=("code",))
         res = resolve(ti, cfg)
-        self.assertEqual(res.status, "selected")
+        self.assertEqual(res.status, "unresolved")
 
     def test_context_filter(self) -> None:
         cfg = _cfg_with_rules(candidates=(
@@ -196,9 +199,64 @@ class TestResolve(unittest.TestCase):
         ), roles={"implementer": "fastmetal/japan-glm-5.3-flash"})
         ti = TaskInput(task_id="t1", role="implementer", context_tokens=200)
         res = resolve(ti, cfg)
-        # rule skipped, role default japan-glm has null context → not excluded → selected
-        self.assertEqual(res.status, "selected")
+        # 一致したルールが不適格でも役割既定には戻さない。
+        self.assertEqual(res.status, "unresolved")
+        self.assertEqual(res.reason, "unresolved: task_rule_ineligible")
         self.assertTrue(any("skipped" in c for c in res.constraints_applied))
+
+    def test_bundled_profiles_route_by_responsibility_kind_risk_and_eligibility(self) -> None:
+        gemma = "gemma-4-26b-a4b-it"
+        oss20 = "gpt-oss-20b"
+        oss120 = "gpt-oss-120b"
+        glm = "japan-glm-5.3-flash"
+        deepseek = "japan-deepseek-v4.1-flash-1017"
+        expected = {
+            "economy": (glm, None),
+            "balanced": (glm, deepseek),
+            "performance": (deepseek, deepseek),
+        }
+        for name, (integration, strict) in expected.items():
+            config = profiles.load_profile_config(name)
+            cases = [
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "low"}, oss20, 2048),
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "low", "context_tokens": 140000}, gemma, 2048),
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "high"}, gemma, 12000),
+                ("implementer", {"task_kind": "implementation"}, gemma, 12000),
+                ("implementer", {"complexity": "high", "risk": "high"}, gemma, 12000),
+                ("architect", {"task_kind": "documentation"}, gemma, 12000),
+                ("expert", {"complexity": "high"}, gemma, 12000),
+                ("reviewer", {"concern": "security", "risk": "high"}, gemma, 12000),
+                ("architect", {"responsibility": "integration"}, integration, 32000),
+                ("expert", {"responsibility": "integration", "complexity": "high"}, integration, 32000),
+                ("expert", {"responsibility": "integration", "complexity": "high", "task_kind": "specialist_analysis"},
+                 integration if name == "economy" else oss120, 32000 if name == "economy" else 16000),
+                ("reviewer", {"responsibility": "integration", "capabilities": ("structured_output",)}, strict, 32000),
+                ("reviewer", {"capabilities": ("structured_output",)}, None, None),
+                ("reviewer", {"domestic_only": True}, None, None),
+                ("architect", {"responsibility": "integration", "domestic_only": True}, integration, 32000),
+                ("architect", {"responsibility": "integration", "data_policy": "confidential", "domestic_only": True}, deepseek, 32000),
+                ("explore", {"context_tokens": 262145}, None, None),
+            ]
+            for role, options, model, output in cases:
+                with self.subTest(profile=name, role=role, options=options):
+                    result = resolve(TaskInput("T1", role, **options), config)
+                    if model is None:
+                        self.assertEqual(result.reason, "unresolved: task_rule_ineligible")
+                    else:
+                        self.assertEqual(str(result.resolved_model), f"fastmetal/{model}")
+                        self.assertTrue(result.reason.startswith("task_rule["))
+                        self.assertEqual(result.max_output_tokens, output)
+                        reasoning = {gemma: "off", oss20: "low"}.get(model, "provider_default")
+                        self.assertEqual(result.reasoning, reasoning)
+
+    def test_human_request_cannot_override_matching_rule(self) -> None:
+        config = profiles.load_profile_config("balanced")
+        result = resolve(TaskInput(
+            "T1", "reviewer", complexity="low", risk="low",
+            model_request=ModelRef("fastmetal", "japan-deepseek-v4.1-flash-1017"),
+            model_request_source="human-config",
+        ), config)
+        self.assertEqual(result.reason, "unresolved: explicit_conflicts_with_task_rule")
 
 
 if __name__ == "__main__":

@@ -17,7 +17,7 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from nepoforge import cli, jsonc, store
+from nepoforge import cli, derive, jsonc, profiles, store
 from nepoforge.store import NepoforgeError
 
 from ._base import IsolatedEnv
@@ -34,6 +34,61 @@ def models_of(path: Path) -> dict[str, str]:
 
 
 class TestLifecycle(IsolatedEnv):
+    def test_update_retires_only_unmodified_legacy_premium_agents(self) -> None:
+        self.assertEqual(cli.main(["init", "--profile", "performance"]), 0)
+        config = store.opencode_dir()
+        manifest = store.load_manifest(store.manifest_path())
+        old_models = {
+            "architect": "fastmetal/glm-5.3",
+            "implementer": "fastmetal/kimi-k3.1-pro",
+            "reviewer": "fastmetal/glm-5.3",
+        }
+        for role, model in old_models.items():
+            rel = f"agents/{role}.md"
+            text = profiles.render(rel, {role: model})
+            (config / rel).write_text(text, encoding="utf-8")
+            manifest["files"][rel] = cli.sha256_text(text)
+        store.store_write_manifest("performance", manifest["files"])
+
+        retired = config / "agents/nf-implementer-beam-1.0.md"
+        retired.write_text(derive.derive_text("implementer", "fastmetal/beam-1.0"), encoding="utf-8")
+        modified = config / "agents/nf-reviewer-glm-5.3.md"
+        content = derive.derive_text("reviewer", "fastmetal/glm-5.3") + "\n利用者の変更\n"
+        modified.write_text(content, encoding="utf-8")
+        self.assertEqual(cli.main(["update", "--dry-run", "--no-projects"]), 0)
+        self.assertTrue(retired.exists())
+        self.assertEqual(models_of(config)["implementer"], "fastmetal/kimi-k3.1-pro")
+
+        self.assertEqual(cli.main(["update", "--no-projects"]), 0)
+        self.assertFalse(retired.exists())
+        self.assertTrue(list(store.backup_root().rglob(retired.name)))
+        self.assertEqual(modified.read_text(encoding="utf-8"), content)
+        self.assertEqual(models_of(config), profiles.load_profile("performance"))
+        self.assertEqual(cli.main(["update", "--no-projects"]), 0)
+
+    def test_primary_check_reports_recommendation_without_writes(self) -> None:
+        self.approve_project_policy(self.home, "private")
+        recommendations = {
+            "economy": "fastmetal/japan-glm-5.3-flash",
+            "balanced": "fastmetal/japan-deepseek-v4.1-flash-1017",
+            "performance": "fastmetal/japan-deepseek-v4.1-flash-1017",
+        }
+        for name, model in recommendations.items():
+            route = ["--endpoint", "https://api.fastmetal.ai/v1", "--upstream-model", model.split("/", 1)[1]]
+            with self.subTest(profile=name), unittest.mock.patch("nepoforge.budget.expired_price", return_value=False):
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    self.assertEqual(cli.main(["profile", "show", name]), 0)
+                    self.assertEqual(cli.main(["profile", "check-primary", "--profile", name, "--model", model, *route]), 0)
+                self.assertIn(f"primary_model (recommended): {model}", output.getvalue())
+                with self.assertRaises(SystemExit):
+                    cli.main(["profile", "check-primary", "--profile", name, "--model", "fastmetal/beam-1.0", *route])
+        with (
+            unittest.mock.patch("nepoforge.budget.expired_price", return_value=True),
+            self.assertRaises(SystemExit),
+        ):
+            cli.main(["profile", "check-primary", "--model", recommendations["balanced"], *route])
+        self.assertFalse(store.manifest_path().exists())
+
     def test_full_cycle(self) -> None:
         # init (既定プロファイル: balanced)
         self.assertEqual(cli.main(["init"]), 0)
@@ -54,9 +109,10 @@ class TestLifecycle(IsolatedEnv):
 
         # profile use で model 行が差し替わる
         before = models_of(store.opencode_dir())
+        self.assertEqual(cli.main(["profile", "use", "performance"]), 0)
+        self.assertNotEqual(before, models_of(store.opencode_dir()))
         self.assertEqual(cli.main(["profile", "use", "economy"]), 0)
-        after = models_of(store.opencode_dir())
-        self.assertNotEqual(before, after)
+        self.assertEqual(before, models_of(store.opencode_dir()))
         self.assertEqual(cli.main(["profile", "use", "economy"]), 0)  # 冪等
         manifest = store.load_manifest(store.manifest_path())
         self.assertEqual(manifest["profile"], "economy")
@@ -187,6 +243,8 @@ class TestLifecycle(IsolatedEnv):
             # --force 無しで update が成功し、新しいパッケージ内容に同期される
             self.assertEqual(cli.main(["update"]), 0)
             self.assertIn("(v2)", agent.read_text(encoding="utf-8"))
+            derived = agent.with_name("nf-architect-gemma-4-26b-a4b-it.md")
+            self.assertIn("(v2)", derived.read_text(encoding="utf-8"))
             status2 = io.StringIO()
             with contextlib.redirect_stdout(status2):
                 cli.main(["status"])
