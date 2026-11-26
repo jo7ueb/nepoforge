@@ -135,14 +135,13 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(res.reason, "role_default")
         self.assertEqual(res.resolved_model, ModelRef("fastmetal", "beam-1.0", None))
 
-    def test_capabilities_filter_null_not_excluded(self) -> None:
-        # candidate with capabilities None should not be excluded
+    def test_unknown_capability_does_not_satisfy_requirement(self) -> None:
         cfg = _cfg_with_rules(candidates=(
             Candidate(ref=ModelRef("fastmetal", "japan-glm-5.3-flash", None), capabilities=None, context_tokens=None),
         ), roles={"implementer": "fastmetal/japan-glm-5.3-flash"})
         ti = TaskInput(task_id="t1", role="implementer", capabilities=("code",))
         res = resolve(ti, cfg)
-        self.assertEqual(res.status, "selected")
+        self.assertEqual(res.status, "unresolved")
 
     def test_context_filter(self) -> None:
         cfg = _cfg_with_rules(candidates=(
@@ -201,34 +200,50 @@ class TestResolve(unittest.TestCase):
         self.assertEqual(res.reason, "unresolved: task_rule_ineligible")
         self.assertTrue(any("skipped" in c for c in res.constraints_applied))
 
-    def test_bundled_profiles_route_by_complexity_and_risk(self) -> None:
+    def test_bundled_profiles_route_by_responsibility_kind_risk_and_eligibility(self) -> None:
+        gemma = "gemma-4-26b-a4b-it"
+        oss20 = "gpt-oss-20b"
+        oss120 = "gpt-oss-120b"
+        glm = "japan-glm-5.3-flash"
+        deepseek = "japan-deepseek-v4.1-flash-1017"
         expected = {
-            "economy": ("japan-glm-5.3-flash", "japan-glm-5.3-flash"),
-            "balanced": ("japan-deepseek-v4.1-flash-1017", "japan-glm-5.3-flash"),
-            "performance": ("japan-deepseek-v4.1-flash-1017", "japan-deepseek-v4.1-flash-1017"),
+            "economy": (glm, None),
+            "balanced": (glm, deepseek),
+            "performance": (deepseek, deepseek),
         }
-        for name, (complex_model, risk_model) in expected.items():
+        for name, (integration, strict) in expected.items():
             config = profiles.load_profile_config(name)
             cases = [
-                ("explore", "investigation", "low", "low", "gemma-4-26b-a4b-it"),
-                ("implementer", None, "low", "low", "gemma-4-26b-a4b-it"),
-                ("architect", "documentation", "low", "low", "gemma-4-26b-a4b-it"),
-                ("reviewer", "requirements", "low", "low", "gemma-4-26b-a4b-it"),
-                ("reviewer", "correctness", "low", "medium", "gemma-4-26b-a4b-it"),
-                ("reviewer", "security", "low", "medium", "gemma-4-26b-a4b-it"),
-                ("implementer", None, "medium", "medium", "gemma-4-26b-a4b-it"),
-                ("architect", "integration", "high", "medium", complex_model),
-                ("implementer", None, "high", "low", complex_model),
-                ("reviewer", "security", "low", "high", risk_model),
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "low"}, oss20, 2048),
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "low", "context_tokens": 140000}, gemma, 2048),
+                ("explore", {"task_kind": "extraction", "complexity": "low", "risk": "high"}, gemma, 12000),
+                ("implementer", {"task_kind": "implementation"}, gemma, 12000),
+                ("implementer", {"complexity": "high", "risk": "high"}, gemma, 12000),
+                ("architect", {"task_kind": "documentation"}, gemma, 12000),
+                ("expert", {"complexity": "high"}, gemma, 12000),
+                ("reviewer", {"concern": "security", "risk": "high"}, gemma, 12000),
+                ("architect", {"responsibility": "integration"}, integration, 32000),
+                ("expert", {"responsibility": "integration", "complexity": "high"}, integration, 32000),
+                ("expert", {"responsibility": "integration", "complexity": "high", "task_kind": "specialist_analysis"},
+                 integration if name == "economy" else oss120, 32000 if name == "economy" else 16000),
+                ("reviewer", {"responsibility": "integration", "capabilities": ("structured_output",)}, strict, 32000),
+                ("reviewer", {"capabilities": ("structured_output",)}, None, None),
+                ("reviewer", {"data_policy": "domestic"}, None, None),
+                ("architect", {"responsibility": "integration", "data_policy": "domestic"}, integration, 32000),
+                ("architect", {"responsibility": "integration", "data_policy": "domestic_zero_retention"}, strict, 32000),
+                ("explore", {"context_tokens": 262145}, None, None),
             ]
-            for role, concern, complexity, risk, model in cases:
-                with self.subTest(profile=name, role=role, concern=concern, complexity=complexity, risk=risk):
-                    result = resolve(TaskInput(
-                        "T1", role, complexity=complexity, risk=risk, concern=concern,
-                        capabilities=("tool_calling", "structured_output"),
-                    ), config)
-                    self.assertEqual(str(result.resolved_model), f"fastmetal/{model}")
-                    self.assertTrue(result.reason.startswith("task_rule["))
+            for role, options, model, output in cases:
+                with self.subTest(profile=name, role=role, options=options):
+                    result = resolve(TaskInput("T1", role, **options), config)
+                    if model is None:
+                        self.assertEqual(result.reason, "unresolved: task_rule_ineligible")
+                    else:
+                        self.assertEqual(str(result.resolved_model), f"fastmetal/{model}")
+                        self.assertTrue(result.reason.startswith("task_rule["))
+                        self.assertEqual(result.max_output_tokens, output)
+                        reasoning = {gemma: "off", oss20: "low"}.get(model, "provider_default")
+                        self.assertEqual(result.reasoning, reasoning)
 
     def test_human_request_cannot_override_matching_rule(self) -> None:
         config = profiles.load_profile_config("balanced")

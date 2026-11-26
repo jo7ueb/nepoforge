@@ -6,6 +6,7 @@ API 課金なし。純粋関数の判定と、provider 予算超過時の扱い�
 from __future__ import annotations
 
 import unittest
+from datetime import date
 
 from nepoforge.budget import (
     PRICE_BASIS,
@@ -47,6 +48,14 @@ class TestEstimateCost(unittest.TestCase):
 
 
 class TestDecideLaunch(unittest.TestCase):
+    def test_deepseek_japan_promotional_price_expires(self) -> None:
+        estimate = _est("fastmetal/japan-deepseek-v4.1-flash-1017", retries=1)
+        state = BudgetState(limit_yen=100)
+        self.assertTrue(decide_launch(state, estimate, on_date=date(2026, 12, 4)).allowed)
+        decision = decide_launch(state, estimate, on_date=date(2026, 12, 5))
+        self.assertFalse(decision.allowed)
+        self.assertIn("price expired", decision.reason)
+
     def test_within_budget_allowed(self) -> None:
         state = BudgetState(limit_yen=LIMIT, spent_yen=10.0)
         d = decide_launch(state, _est())

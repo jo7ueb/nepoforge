@@ -63,11 +63,11 @@ class TestDerivePlan(IsolatedEnv):
     def test_conflict_detection(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         cfg = profiles.load_profile_config("balanced")
-        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
+        plan = derive.derive_plan(cfg, role="architect", model="fastmetal/gemma-4-26b-a4b-it")
         target = store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("different content\n", encoding="utf-8")
-        plan2 = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
+        plan2 = derive.derive_plan(cfg, role="architect", model="fastmetal/gemma-4-26b-a4b-it")
         self.assertEqual(plan2[0].state, "conflict")
 
 
@@ -79,12 +79,12 @@ class TestDeriveCLI(IsolatedEnv):
     def test_derive_conflict_exit_2(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
         cfg = profiles.load_profile_config("balanced")
-        plan = derive.derive_plan(cfg, role="implementer", model="fastmetal/gemma-4-26b-a4b-it")
+        plan = derive.derive_plan(cfg, role="architect", model="fastmetal/gemma-4-26b-a4b-it")
         target = store.opencode_dir() / "agents" / (plan[0].agent_id + ".md")
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("different\n", encoding="utf-8")
         with self.assertRaises(SystemExit) as cm:
-            cli.main(["profile", "derive", "--role", "implementer", "--model", "fastmetal/gemma-4-26b-a4b-it"])
+            cli.main(["profile", "derive", "--role", "architect", "--model", "fastmetal/gemma-4-26b-a4b-it"])
         self.assertEqual(cm.exception.code, 2)
 
     def test_derive_two_runs_noop(self) -> None:
@@ -212,7 +212,7 @@ class TestDeriveCLI(IsolatedEnv):
 
     def test_uninstall_removes_derived_matching(self) -> None:
         self.assertEqual(cli.main(["init"]), 0)
-        derived = store.opencode_dir() / "agents" / "nf-implementer-gemma-4-26b-a4b-it.md"
+        derived = store.opencode_dir() / "agents" / "nf-architect-gemma-4-26b-a4b-it.md"
         self.assertTrue(derived.is_file())
         self.assertEqual(cli.main(["uninstall"]), 0)
         self.assertFalse(derived.is_file())

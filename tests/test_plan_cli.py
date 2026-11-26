@@ -161,7 +161,7 @@ class TestPlanReady(IsolatedEnv):
                 "task_id": f"T{i}", "role": "reviewer", "complexity": "low", "risk": risk,
                 "concern": concern, "inputs": {"snapshot": "fixed-diff"},
                 "read_scope": ["nepoforge/cli.py"], "write_scope": [],
-                "capabilities": ["tool_calling", "structured_output"],
+                "capabilities": ["tool_calling"],
             }
             for i, (concern, risk) in enumerate(
                 (("requirements", "low"), ("correctness", "low"), ("security", "medium")), 1
@@ -176,7 +176,7 @@ class TestPlanReady(IsolatedEnv):
                 for task in tasks:
                     tid = task["task_id"]
                     self.assertEqual(result["resolved"][tid], "fastmetal/gemma-4-26b-a4b-it")
-                    self.assertEqual(result["model_resolutions"][tid]["binding"], "nf-reviewer-gemma-4-26b-a4b-it")
+                    self.assertEqual(result["model_resolutions"][tid]["binding"], "reviewer")
                     self.assertTrue(result["model_resolutions"][tid]["reason"].startswith("task_rule["))
 
     def test_plan_cannot_override_rule_even_with_spoofed_source(self) -> None:
@@ -192,8 +192,11 @@ class TestPlanReady(IsolatedEnv):
                 self.assertIn("untrusted_source", result["denied"][0]["reason"])
 
     def test_missing_or_modified_binding_does_not_fall_back_or_reserve(self) -> None:
-        tasks = [{"task_id": "T1", "role": "reviewer", "complexity": "low", "risk": "low"}]
-        path = store.opencode_dir() / "agents/nf-reviewer-gemma-4-26b-a4b-it.md"
+        tasks = [{
+            "task_id": "T1", "role": "architect", "complexity": "low", "risk": "low",
+            "write_scope": ["docs/example.md"],
+        }]
+        path = store.opencode_dir() / "agents/nf-architect-gemma-4-26b-a4b-it.md"
         path.unlink()
         missing = self._ready(tasks, "--limit-yen", "100")
         self.assertEqual(missing["launch"], [])
@@ -224,6 +227,22 @@ class TestPlanReady(IsolatedEnv):
             result = self._ready(tasks, "--limit-yen", "10", "--retries", "0")
         self.assertEqual(result["launch"], ["T2"])
         self.assertEqual(result["reservations_yen"], {"T2": 10})
+
+    def test_extraction_budget_cannot_override_output_policy(self) -> None:
+        task = {
+            "task_id": "T1", "role": "explore", "task_kind": "extraction",
+            "responsibility": "leaf", "complexity": "low", "risk": "low",
+            "max_input_tokens": 1000,
+        }
+        result = self._ready([task], "--limit-yen", "100", "--retries", "0")
+        self.assertEqual(result["launch"], ["T1"])
+        self.assertEqual(result["resolved"]["T1"], "fastmetal/gpt-oss-20b")
+        self.assertEqual(result["model_resolutions"]["T1"]["reasoning"], "low")
+        self.assertEqual(result["model_resolutions"]["T1"]["max_output_tokens"], 2048)
+        self.assertEqual(result["reservations_yen"]["T1"], 0.0533)
+        denied = self._ready([{**task, "max_output_tokens": 2049}], "--limit-yen", "100")
+        self.assertEqual(denied["reservations_yen"], {})
+        self.assertIn("exceeds task policy", denied["denied"][0]["reason"])
 
     def test_unset_limit_denies_all(self) -> None:
         import contextlib

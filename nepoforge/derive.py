@@ -16,6 +16,7 @@ from .store import NepoforgeError
 from . import profiles
 
 BUILTIN_AGENT_IDS = {"build", "plan", "general", "explore", "title", "summary", "compaction"}
+LEGACY_PREMIUM_MODELS = ("fastmetal/beam-1.0", "fastmetal/kimi-k3.1-pro", "fastmetal/glm-5.3")
 
 
 class DeriveItem:
@@ -201,7 +202,7 @@ def safe_texts() -> set[str]:
     task_rules のモデルは candidates にも自動で入るが、明示的に取り込んで
     おく (生成・削除の判定基準が candidates の作り方に依存しないようにする)。
     """
-    models: set[str] = set()
+    models = set(LEGACY_PREMIUM_MODELS)
     for name in profiles.available_profiles():
         try:
             config = profiles.load_profile_config(name)
@@ -221,3 +222,20 @@ def safe_texts() -> set[str]:
             except NepoforgeError:
                 continue
     return texts
+
+
+def legacy_premium_paths(target_dir: Path, previous_roles: dict[str, str]) -> list[Path]:
+    """旧同梱構成から生成できる未改変ファイルだけを移行対象とする。"""
+    retired = []
+    for role in store.USER_AGENT_IDS:
+        for model in LEGACY_PREMIUM_MODELS:
+            path = target_dir / "agents" / f"{agent_id_for(role, model)}.md"
+            if path.is_symlink() or not path.is_file():
+                continue
+            current = path.read_bytes()
+            if current == derive_text(role, model).encode("utf-8") or (
+                role in previous_roles
+                and current == profiles.apply_to_agent(role, previous_roles[role], model).encode("utf-8")
+            ):
+                retired.append(path)
+    return retired

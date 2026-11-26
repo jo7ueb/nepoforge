@@ -180,6 +180,11 @@ class Candidate:
     destination: str | None = None
     retention: str | None = None
     approval_ref: str | None = None
+    no_training: bool | None = None
+    reasoning: str | None = None
+
+
+DATA_POLICIES = ("no_training", "domestic", "zero_retention", "domestic_zero_retention")
 
 
 @dataclass(frozen=True)
@@ -187,6 +192,7 @@ class TaskRule:
     when: dict[str, Any] = field(default_factory=dict)
     model: str = ""
     note: str | None = None
+    max_output_tokens: int | None = None
 
 
 @dataclass(frozen=True)
@@ -245,6 +251,7 @@ class ProfileConfig:
     candidates: tuple[Candidate, ...] = field(default_factory=tuple)
     task_rules: tuple[TaskRule, ...] = field(default_factory=tuple)
     constraints: Constraints = field(default_factory=Constraints)
+    primary_model: ModelRef | None = None
 
 
 def load_profile_config(name: str) -> ProfileConfig:
@@ -401,9 +408,16 @@ def load_profile_config(name: str) -> ProfileConfig:
             ar = c.get("approval_ref", None)
             if ar is not None and not isinstance(ar, str):
                 raise NepoforgeError(f"candidate 'approval_ref' must be a string: {path}")
-            candidates.append(
-                Candidate(ref=ref, capabilities=caps, context_tokens=ct, destination=dest, retention=ret, approval_ref=ar)
-            )
+            no_training = c.get("no_training")
+            if no_training is not None and not isinstance(no_training, bool):
+                raise NepoforgeError(f"candidate 'no_training' must be boolean: {path}")
+            reasoning = c.get("reasoning")
+            if reasoning not in (None, "off", "low", "provider_default"):
+                raise NepoforgeError(f"candidate 'reasoning' must be off, low or provider_default: {path}")
+            candidates.append(Candidate(
+                ref=ref, capabilities=caps, context_tokens=ct, destination=dest,
+                retention=ret, approval_ref=ar, no_training=no_training, reasoning=reasoning,
+            ))
 
     # provider 承認チェック
     for c in candidates:
@@ -417,7 +431,7 @@ def load_profile_config(name: str) -> ProfileConfig:
     if not isinstance(raw_rules, list):
         raise NepoforgeError(f"'task_rules' must be an array: {path}")
     rules: list[TaskRule] = []
-    allowed_when = {"role", "capabilities", "complexity", "risk", "concern"}
+    allowed_when = {"role", "capabilities", "complexity", "risk", "concern", "responsibility", "task_kind", "data_policy"}
     for r in raw_rules:
         if not isinstance(r, dict):
             raise NepoforgeError(f"task_rule entry must be an object: {path}")
@@ -438,6 +452,12 @@ def load_profile_config(name: str) -> ProfileConfig:
                 raise NepoforgeError(f"task_rule 'capabilities' must be a string array: {path}")
         if "concern" in when and not isinstance(when["concern"], str):
             raise NepoforgeError(f"task_rule 'concern' must be a string: {path}")
+        if "responsibility" in when and when["responsibility"] not in ("leaf", "integration"):
+            raise NepoforgeError(f"task_rule 'responsibility' must be leaf or integration: {path}")
+        if "task_kind" in when and not isinstance(when["task_kind"], str):
+            raise NepoforgeError(f"task_rule 'task_kind' must be a string: {path}")
+        if "data_policy" in when and when["data_policy"] not in DATA_POLICIES:
+            raise NepoforgeError(f"task_rule 'data_policy' is invalid: {path}")
         model = r.get("model")
         if not isinstance(model, str):
             raise NepoforgeError(f"task_rule 'model' must be a string: {path}")
@@ -450,7 +470,15 @@ def load_profile_config(name: str) -> ProfileConfig:
         note = r.get("note", None)
         if note is not None and not isinstance(note, str):
             raise NepoforgeError(f"task_rule 'note' must be a string: {path}")
-        rules.append(TaskRule(when=dict(when), model=model, note=note))
+        max_output_tokens = r.get("max_output_tokens")
+        if max_output_tokens is not None and (type(max_output_tokens) is not int or max_output_tokens < 1):
+            raise NepoforgeError(f"task_rule 'max_output_tokens' must be a positive integer: {path}")
+        rules.append(TaskRule(dict(when), model, note, max_output_tokens))
+
+    primary = data.get("primary_model")
+    primary_model = parse_model(primary) if primary is not None else None
+    if primary_model is not None and format_model(primary_model) not in candidate_model_strs:
+        raise NepoforgeError(f"'primary_model' must be in candidates: {path}")
 
     return ProfileConfig(
         name=data.get("name", name) if isinstance(data.get("name"), str) else name,
@@ -458,4 +486,5 @@ def load_profile_config(name: str) -> ProfileConfig:
         candidates=tuple(candidates),
         task_rules=tuple(rules),
         constraints=constraints,
+        primary_model=primary_model,
     )

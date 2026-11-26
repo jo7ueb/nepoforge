@@ -1,21 +1,23 @@
 {
   "name": "economy",
-  "description": "末端は Gemma 4、高難度・高リスクの判断は GLM Flash Japan。",
+  "description": "統括と統合判断は GLM Flash Japan、末端は Gemma 4。",
+  "primary_model": "fastmetal/japan-glm-5.3-flash",
   "roles": {
     "architect": "fastmetal/japan-glm-5.3-flash",
     "expert": "fastmetal/japan-glm-5.3-flash",
-    "explore": "fastmetal/japan-glm-5.3-flash",
-    "implementer": "fastmetal/japan-glm-5.3-flash",
-    "reviewer": "fastmetal/japan-glm-5.3-flash"
+    "explore": "fastmetal/gemma-4-26b-a4b-it",
+    "implementer": "fastmetal/gemma-4-26b-a4b-it",
+    "reviewer": "fastmetal/gemma-4-26b-a4b-it"
   },
   "candidates": [
-    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 262144},
-    {"model": "fastmetal/japan-glm-5.3-flash", "capabilities": ["code", "tool_calling", "structured_output"], "context_tokens": 1000000}
+    {"model": "fastmetal/gpt-oss-20b", "capabilities": ["tool_calling"], "context_tokens": 131072, "destination": "global", "no_training": true, "reasoning": "low"},
+    {"model": "fastmetal/gemma-4-26b-a4b-it", "capabilities": ["code", "tool_calling"], "context_tokens": 262144, "destination": "global", "no_training": true, "reasoning": "off"},
+    {"model": "fastmetal/japan-glm-5.3-flash", "capabilities": ["code", "tool_calling"], "context_tokens": 1000000, "destination": "japan", "no_training": true, "reasoning": "provider_default"}
   ],
   "task_rules": [
-    {"when": {"complexity": "high"}, "model": "fastmetal/japan-glm-5.3-flash"},
-    {"when": {"risk": "high"}, "model": "fastmetal/japan-glm-5.3-flash"},
-    {"when": {"complexity": "low"}, "model": "fastmetal/gemma-4-26b-a4b-it"},
-    {"when": {"complexity": "medium"}, "model": "fastmetal/gemma-4-26b-a4b-it"}
+    {"when": {"responsibility": "integration"}, "model": "fastmetal/japan-glm-5.3-flash", "max_output_tokens": 32000},
+    {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low"}, "model": "fastmetal/gpt-oss-20b", "max_output_tokens": 2048},
+    {"when": {"responsibility": "leaf", "task_kind": "extraction", "complexity": "low", "risk": "low"}, "model": "fastmetal/gemma-4-26b-a4b-it", "max_output_tokens": 2048},
+    {"when": {"responsibility": "leaf"}, "model": "fastmetal/gemma-4-26b-a4b-it", "max_output_tokens": 12000}
   ]
 }

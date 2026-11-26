@@ -28,14 +28,43 @@
           "glm-5.3-flashx": { "name": "GLM 5.3 FlashX" },
           "devstral-2512": { "name": "Devstral 2512" },
           // Low cost / Subagents
-          "japan-deepseek-v4.1-flash-1017": { "name": "DeepSeek V4.1 Flash Japan" },
+          "gpt-oss-20b": {
+            "name": "GPT OSS 20B",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 131072, "output": 2048 },
+            "body": { "reasoning": { "effort": "low" } }
+          },
+          "gpt-oss-120b": {
+            "name": "GPT OSS 120B",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 131072, "output": 16000 }
+          },
+          "japan-deepseek-v4.1-flash-1017": {
+            "name": "DeepSeek V4.1 Flash Japan",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 1048576, "output": 32000 }
+          },
           "deepseek-v4.1-flash-1017": { "name": "DeepSeek V4.1 Flash Global" },
-          "japan-glm-5.3-flash": { "name": "GLM 5.3 Flash Japan" },
+          "japan-glm-5.3-flash": {
+            "name": "GLM 5.3 Flash Japan",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 1000000, "output": 32000 }
+          },
           "glm-5.3-flash": { "name": "GLM 5.3 Flash Global" },
           "japan-glm-5.3-nvfp4": { "name": "GLM 5.3 NVFP4 Japan" },
           "anthropic-claude-haiku-5-5": { "name": "Claude Haiku 5.5" },
           "japan-gemma-4-31b": { "name": "Gemma 4 31B Japan" },
-          "gemma-4-26b-a4b-it": { "name": "Gemma 4 26B" }
+          "gemma-4-26b-a4b-it": {
+            "name": "Gemma 4 26B",
+            "capabilities": { "tools": true },
+            "compatibility": { "maxTokensField": "max_tokens" },
+            "limit": { "context": 262144, "output": 12000 },
+            "body": { "reasoning": { "enabled": false } }
+          }
         }
       }
     }

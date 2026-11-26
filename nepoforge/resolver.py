@@ -11,7 +11,7 @@ from typing import Any
 
 from . import profiles
 from .profiles import ModelRef, parse_model
-from .derive import slug_of
+from .derive import agent_id_for
 
 
 @dataclass(frozen=True)
@@ -26,6 +26,9 @@ class TaskInput:
     model_request: ModelRef | None = None
     model_request_source: str = "coordinator"
     executor: str = "agent"
+    responsibility: str = "leaf"
+    task_kind: str | None = None
+    data_policy: str | None = None
 
 
 @dataclass(frozen=True)
@@ -38,6 +41,8 @@ class ModelResolution:
     reason: str
     constraints_applied: tuple[str, ...] = field(default_factory=tuple)
     status: str = "selected"
+    reasoning: str | None = None
+    max_output_tokens: int | None = None
 
 
 def _provider_approved_ids(config: Any) -> set[str]:
@@ -56,12 +61,16 @@ def _eligible(task: TaskInput, config: Any) -> list[Any]:
     for c in config.candidates:
         if c.ref.provider not in approved_ids:
             continue
-        if task.capabilities and c.capabilities is not None:
-            if not set(task.capabilities).issubset(set(c.capabilities)):
-                continue
-        if task.context_tokens is not None and c.context_tokens is not None:
-            if c.context_tokens < task.context_tokens:
-                continue
+        if not set(task.capabilities).issubset(c.capabilities or ()):
+            continue
+        if task.context_tokens is not None and (c.context_tokens or 0) < task.context_tokens:
+            continue
+        if task.data_policy and c.no_training is not True:
+            continue
+        if task.data_policy in ("domestic", "domestic_zero_retention") and c.destination != "japan":
+            continue
+        if task.data_policy in ("zero_retention", "domestic_zero_retention") and c.retention != "zero":
+            continue
         out.append(c)
     return out
 
@@ -69,17 +78,11 @@ def _eligible(task: TaskInput, config: Any) -> list[Any]:
 def _matches(when: Any, task: TaskInput) -> bool:
     if not isinstance(when, dict):
         return False
-    if "role" in when and when["role"] != task.role:
-        return False
-    if "complexity" in when and when["complexity"] != task.complexity:
-        return False
-    if "risk" in when and when["risk"] != task.risk:
-        return False
-    if "concern" in when and when["concern"] != task.concern:
-        return False
-    if "capabilities" in when:
-        req = set(when["capabilities"])
-        if not (set(task.capabilities) & req):
+    for key, expected in when.items():
+        if key == "capabilities":
+            if not set(task.capabilities).intersection(expected):
+                return False
+        elif getattr(task, key, None) != expected:
             return False
     return True
 
@@ -113,25 +116,31 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
         )
     if task.complexity not in ("low", "medium", "high") or task.risk not in ("low", "medium", "high"):
         return unresolved("invalid_complexity_or_risk")
+    if task.responsibility not in ("leaf", "integration"):
+        return unresolved("invalid_responsibility")
+    if task.data_policy is not None and task.data_policy not in profiles.DATA_POLICIES:
+        return unresolved("invalid_data_policy")
 
-    eligible_refs = {c.ref for c in _eligible(task, config)}
+    eligible = {c.ref: c for c in _eligible(task, config)}
     skips: list[str] = []
     resolved_ref: ModelRef | None = None
     reason = "role_default"
+    max_output_tokens = None
     for i, rule in enumerate(config.task_rules):
         if not _matches(rule.when, task):
             continue
         rule_ref = parse_model(rule.model)
-        if rule_ref in eligible_refs:
+        if rule_ref in eligible:
             resolved_ref = rule_ref
             reason = f"task_rule[{i}]"
+            max_output_tokens = rule.max_output_tokens
             break
         skips.append(f"task_rule[{i}] skipped (model ineligible)")
     if resolved_ref is None and skips:
         return unresolved("task_rule_ineligible", tuple(skips))
 
     if task.model_request is not None:
-        if task.model_request not in eligible_refs:
+        if task.model_request not in eligible:
             return unresolved("explicit_not_eligible")
         if resolved_ref is not None and task.model_request != resolved_ref:
             return unresolved("explicit_conflicts_with_task_rule")
@@ -141,14 +150,14 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
     default_model = config.roles.get(task.role)
     default_ref = parse_model(default_model) if default_model else None
     if resolved_ref is None:
-        if default_ref not in eligible_refs:
+        if default_ref not in eligible:
             return unresolved("role_default_ineligible")
         resolved_ref = default_ref
 
     if resolved_ref == default_ref:
         binding = task.role
     else:
-        binding = f"nf-{task.role}-{slug_of(resolved_ref)}"
+        binding = agent_id_for(task.role, resolved_ref)
 
     return ModelResolution(
         task_id=task.task_id,
@@ -159,4 +168,6 @@ def resolve(task: TaskInput, config: Any) -> ModelResolution:
         reason=reason,
         constraints_applied=tuple(skips),
         status="selected",
+        reasoning=eligible[resolved_ref].reasoning,
+        max_output_tokens=max_output_tokens,
     )

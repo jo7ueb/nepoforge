@@ -38,6 +38,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 - 委譲の集約先は primary (このセッション) とする。子エージェントからの再委譲は行わない。
 - 各委譲は下記「委譲契約 (TaskSpec)」に従い、報告の受理までを一単位として進める。
 - 有料実行を含む場合は実行前に承認済みの総予算と停止条件を確認し、記録する。有料の親セッションや実行済みの試行も実績・見積りに含める。上限未設定では有料タスクを起動しない。
+- Primary は `nepoforge profile show` の推奨と OpenCode の実際の選択 (`GET /api/session/{sessionID}` の `data.model`、またはセッションの UI) を `nepoforge profile check-primary --model <選択済みモデル>` で照合する。利用者は可能なら最初の送信前に確認する。未確認・不一致・価格失効はそのまま続行せず、人間の選択・承認を確認する。推奨はセッションや設定を書き換えず、既発生の Primary 課金を止めたり上限を強制したりできない。
 
 ### 3.0 タスク分解
 
@@ -97,7 +98,8 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 6. **完了条件** — acceptance_criteria: 検証可能な条件のリスト。受理判断の基準にする
 7. **依存** — depends_on: 必須依存の task_id のみを列挙する。緩い参照は inputs に記録し、起動判定に含めない
 
-- モデル選択の前に `complexity`・`risk` (`low` / `medium` / `high`) と必要な `capabilities` (例: `tool_calling`, `structured_output`) を記録し、必要なら `context_tokens` と `concern` も付ける。`high` は分割後も残る複雑な判断や重大なリスクに限り、根拠を記録する。計画に `model_request` を書かない。
+- モデル選択の前に `responsibility` (`leaf` / `integration`)、`task_kind`、`complexity`・`risk` (`low` / `medium` / `high`) と必要な `capabilities` を記録する。定型の抽出・分類には `task_kind: extraction`、分割しても統合が必要な高度な専門分析には `specialist_analysis` を使う。必要なら `context_tokens` と `concern` も付ける。`data_policy` は通常 `no_training` とし、国内実行やゼロ保持も必要なら `domestic` / `zero_retention` / `domestic_zero_retention` を明示する。
+- 高難度の末端は再分割・入力限定・ツール利用を先に検討する。統合を伴わない作業を上位モデル用に再分類しない。高リスクでは根拠と独立した検証方法を記録する。`tool_calling` と厳密な JSON スキーマ強制 (`structured_output`) は別条件。計画に `model_request` や推論設定を書かない。
 - permissions・送信先の指定を含めない。これらを含む計画は起動前に拒否する。
 
 ### タスク計画の管理 (Coordinator 規則)
@@ -109,7 +111,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 - **モデル**: 人間が設定した現行プロファイルの候補・`task_rules` を使用する。末端は軽量モデルを既定とし、役割・`performance` の選択だけを理由に高額化しない。候補登録は起動承認ではない。
   - Coordinator は `model_request`、`profile derive --role ... --model ...`、起動ツールのモデル引数等で結果を上書きしない。計画 JSON の明示指定は `model_request_source` の自己申告によらず `unresolved`。明示的な別モデルの許可は人間がプロファイルに記す。
   - 必要能力・データ送信先・保持条件が合うことを確認する。一致したルールが不適格、または利用不能なら報告して停止し、役割既定への切替、無断の昇格・再分類・別プロバイダーへの変更をしない。
-  - 派生定義は利用開始前に `nepoforge profile derive --dry-run` で確認し、人間の管理下の `init` / `update` / `profile use` または `profile derive` で準備する。`launch` に入ったタスクだけ `model_resolutions[task_id].binding` を委譲先に指定する。起動前に作業先と同じ location の OpenCode のエージェント・モデル一覧 (`GET /api/agent/{agentID}`、`GET /api/model`、または同等のツール) と権限を確認し、`resolved` のモデルで起動できることを確認できなければ停止する。
+  - 派生定義は利用開始前に `nepoforge profile derive --dry-run` で確認し、人間の管理下の `init` / `update` / `profile use` または `profile derive` で準備する。`launch` に入ったタスクだけ `model_resolutions[task_id].binding` を委譲先に指定する。起動前に作業先と同じ location の OpenCode のエージェント・モデル一覧 (`GET /api/agent/{agentID}`、`GET /api/model`、または同等のツール)、有効なモデル設定と権限を確認する。`resolved` のモデル・推論設定と一致しない場合や確認できない場合は停止する。
   - 完了後に対象子セッションの agent・model をメッセージ API (`GET /api/session/{sessionID}/message`) で突合する。不一致または確認不能の結果を受理しない。
 - **起動判定 (ready)**: 次の 4 条件をすべて満たしたタスクから起動する。
   1. depends_on のタスクがすべて受理済みである。
@@ -117,6 +119,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
   3. 予算・時間の既定上限内である (未設定を無制限と解釈しない)。予算の判定は `nepoforge plan ready` が `nepoforge.budget.decide_launch` の規則 (設計メモ 0008) に従って実施する。価格不明・上限未設定・予算不足・予算超過後の停止モードでは起動しない。
   4. 同時 running 数が並列上限内である。既定上限 10 であり、ユーザー承認済みの並列上限・予算・プロバイダー制約に従って調整する (プロファイルの `constraints.max_parallel` で設定し、`nepoforge profile show` で確認する)。未設定・未知を無制限と解釈せず、上限・予算を無断で引き上げない。
 - **起動順と精算**: Coordinator だけが最新の `--accepted` / `--running` / `--failed`、総上限 `--limit-yen`、実績 `--spent-yen`、既に起動済みの未精算分 `--reserved-yen` を渡して判定する。トークン・再試行の見積りはタスクの規模に合わせて設定する。`reservations_yen` は許可済みバッチ内で累積判定した金額で、実際に起動した分だけ次回判定に持ち越す。終了時は予約を外し、実績 (失敗・再試行分も含む) を加える。次バッチや再試行の直前は再判定する。依存が受理されたタスクから、工程を一括で待たず空き枠を使う。
+- `model_resolutions` の `max_output_tokens` は推論込みの見積り上限。ツール往復・キャッシュを含む総入力と、回答・推論を含む総出力を見積もる。タスクが上限に収まらない場合は分割または停止する。OpenCode のモデル設定は一回のリクエストに関わるもので、セッション全体の出力や支出の強制上限ではない。
 - **blocked**: 必須依存が失敗した後続タスクは起動しない。無関係なタスクは止めない。依存の再実行と受理後に起動判定へ戻す。依存を断念する場合は後続も取り消して報告する。
 - **再試行上限**: 実行失敗 (error・受理拒否) の自動再委譲は、同一 task_id・同一モデルで予算ゲートを通過した場合に 1 回まで。モデルの不適格・利用不能や予算拒否を、再試行や primary の有料実施で迂回しない。
 - **予算超過時**: provider の予算超過 (`Budget has been exceeded` 等) を検知したら、以後の判定に `--budget-error` を指定して新規有料起動と自動再試行を即時停止する。安全に停止できる進行中有料タスクは停止し、状態と理由を報告する。再開は人間の明示承認後のみ。課金なしのローカル検証は継続してよい (設計メモ 0008)。

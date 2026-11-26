@@ -31,6 +31,11 @@ from .store import (
 
 GUARDRAIL_TEMPLATE = store.TEMPLATE_DIR / "guardrail.jsonc"
 PROVIDER_TEMPLATE = store.TEMPLATE_DIR / "provider-fastmetal.jsonc"
+# #70 以前の配布ブロック (末尾改行なし)。完全一致する管理ブロックだけを移行する。
+LEGACY_FASTMETAL_BLOCK_HASHES = {
+    "0fe7fa135597ecec69049be1e46b47f64eb4a4d96c40de25b255022eea9263ef",
+    "e856da90fe0b0dc385771df461437df6c39bb54cfaba2bfbb42d0f7d3a256d25",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -103,6 +108,7 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
                 raise SystemExit(2)
             plan.append(("update", rel))
 
+    retired: list[Path] = []
     try:
         cfg = profiles.load_profile_config(profile_name)
         # manifest と一致する旧役割定義から、未改変の旧派生定義を識別する。
@@ -112,19 +118,23 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
             if state[rel] == "updatable":
                 previous_roles[role] = (config_dir / rel).read_text(encoding="utf-8")
         dplan = derive.derive_plan(cfg, target_dir=config_dir, previous_roles=previous_roles)
+        if profile_name in ("economy", "balanced", "performance"):
+            retired = derive.legacy_premium_paths(config_dir, previous_roles)
     except NepoforgeError as exc:
         print(f"warning: derived generation skipped: {exc}", file=sys.stderr)
         dplan = []
     if not dry_run:
         _check_derive_conflicts(dplan, config_dir, force)
 
-    if manifest is not None and not plan and all(it.state == "ok" for it in dplan):
+    if manifest is not None and not plan and not retired and all(it.state == "ok" for it in dplan):
         if manifest.get("version") == store.VERSION and manifest.get("profile") == profile_name:
             print(f"up to date (version {manifest.get('version')}, profile {profile_name}). nothing to do")
             return 0
         print(f"already installed (version {manifest.get('version')}); refreshing manifest")
     for action, rel in plan:
         print(f"  [{action:6}] {config_dir / rel}")
+    for path in retired:
+        print(f"  [retire] {path}")
     if dry_run:
         print("dry-run: no changes made")
         for action, rel in plan:
@@ -144,6 +154,12 @@ def sync_global(profile_name: str | None, force: bool, dry_run: bool) -> int:
         dest.write_text(profiles.render(rel, prof), encoding="utf-8")
 
     _derive_apply(dplan, config_dir, force, False)
+    for path in retired:
+        rel = path.relative_to(config_dir).as_posix()
+        backup = store.backup_file(config_dir, rel)
+        if backup:
+            print(f"  [backup  ] {rel} -> {backup}")
+            path.unlink()
     store.store_write_manifest(profile_name, expected)
     print(f"installed (version {store.VERSION}, profile {profile_name}). manifest: {store.manifest_path()}")
     return 0
@@ -709,6 +725,9 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
     """計画 1 件を PlannedTask と resolver/budget 用の拡張属性に分ける。"""
     if not isinstance(raw, dict):
         raise NepoforgeError("plan task must be an object")
+    forbidden = raw.keys() & {"permissions", "destination", "reasoning", "reasoning_effort", "variant"}
+    if forbidden:
+        raise NepoforgeError(f"plan task cannot override: {', '.join(sorted(forbidden))}")
     for key in ("task_id", "role"):
         if not isinstance(raw.get(key), str):
             raise NepoforgeError(f"plan task requires string '{key}'")
@@ -720,6 +739,8 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
     context_tokens = raw.get("context_tokens")
     if context_tokens is not None and (type(context_tokens) is not int or context_tokens < 1):
         raise NepoforgeError("plan task 'context_tokens' must be a positive integer")
+    if raw.get("task_kind") is not None and not isinstance(raw["task_kind"], str):
+        raise NepoforgeError("plan task 'task_kind' must be a string")
     extras = {
         k: raw[k]
         for k in (
@@ -730,6 +751,9 @@ def _plan_task_from_dict(raw: dict) -> tuple[planning.PlannedTask, dict]:
             "risk",
             "concern",
             "context_tokens",
+            "responsibility",
+            "task_kind",
+            "data_policy",
             "max_input_tokens",
             "max_output_tokens",
             "retries",
@@ -798,6 +822,9 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 # 計画 JSON は人間設定の出所を証明できない。
                 model_request_source="plan",
                 executor=executor,
+                responsibility=ext.get("responsibility", "leaf"),
+                task_kind=ext.get("task_kind"),
+                data_policy=ext.get("data_policy"),
             ),
             config,
         )
@@ -835,17 +862,25 @@ def cmd_plan(args: argparse.Namespace) -> int:
                 {"task_id": tid, "reason": f"model unresolved ({unresolved_reason(unresolved, tid)})"}
             )
             continue
+        resolution = resolutions[tid]
+        output_limit = resolution.max_output_tokens
+        output_estimate = ext.get("max_output_tokens", args.est_output)
+        if output_estimate is None:
+            output_estimate = output_limit or 50_000
         est = budget.LaunchEstimate(
             model=model,
             max_input_tokens=ext.get("max_input_tokens", args.est_input),
-            max_output_tokens=ext.get("max_output_tokens", args.est_output),
+            max_output_tokens=output_estimate,
             retries=ext.get("retries", args.retries),
         )
         d = budget.decide_launch(state, est, provider_budget_error=args.budget_error)
         if not d.allowed:
             denied.append({"task_id": tid, "reason": d.reason})
             continue
-        binding_problem = _plan_binding_problem(resolutions[tid], model)
+        if output_limit is not None and est.max_output_tokens > output_limit:
+            denied.append({"task_id": tid, "reason": f"output estimate exceeds task policy ({output_limit} tokens)"})
+            continue
+        binding_problem = _plan_binding_problem(resolution, model)
         if binding_problem:
             denied.append({"task_id": tid, "reason": binding_problem})
             continue
@@ -862,7 +897,12 @@ def cmd_plan(args: argparse.Namespace) -> int:
         "not_ready": sorted(not_ready),
         "resolved": resolved,
         "model_resolutions": {
-            tid: {"binding": res.binding, "reason": res.reason}
+            tid: {
+                "binding": res.binding,
+                "reason": res.reason,
+                "reasoning": res.reasoning,
+                "max_output_tokens": res.max_output_tokens,
+            }
             for tid, res in resolutions.items()
         },
         "unresolved": unresolved,
@@ -906,6 +946,19 @@ def unresolved_reason(unresolved: list[dict], task_id: str) -> str:
 
 
 def cmd_profile(args: argparse.Namespace) -> int:
+    if args.profile_command == "check-primary":
+        manifest = store.load_manifest(store.manifest_path())
+        name = args.profile or (manifest.get("profile") if manifest else None) or "balanced"
+        config = profiles.load_profile_config(name)
+        if config.primary_model is None:
+            fail(f"profile '{name}' has no Primary recommendation")
+        observed = profiles.parse_model(args.model)
+        if observed != config.primary_model:
+            fail(f"Primary model mismatch: selected {observed}, recommended {config.primary_model}")
+        if budget.price_for(str(observed)) is None or budget.expired_price(str(observed)):
+            fail(f"Primary model has no current price in the budget table: {observed}")
+        print(f"Primary model matches profile '{name}': {observed}")
+        return 0
     if args.profile_command == "list":
         current = None
         manifest = store.load_manifest(store.manifest_path())
@@ -926,6 +979,7 @@ def cmd_profile(args: argparse.Namespace) -> int:
             cfg = profiles.load_profile_config(name)
             print(f"  max_parallel: {cfg.constraints.max_parallel}")
             print(f"  task_rules:   {len(cfg.task_rules)}")
+            print(f"  primary_model (recommended): {cfg.primary_model or '(unset)'}")
         except NepoforgeError:
             pass
         return 0
@@ -1062,6 +1116,7 @@ def apply_provider(dry_run: bool) -> None:
         (p for p in (config_dir / "opencode.jsonc", config_dir / "opencode.json") if p.is_file()),
         config_dir / "opencode.jsonc",
     )
+    action = "add"
     if config_file.is_file():
         if config_file.suffix == ".json":
             fail(
@@ -1076,18 +1131,23 @@ def apply_provider(dry_run: bool) -> None:
             fail(f"cannot edit {config_file}: {exc}. fix or merge the FastMetal provider manually (see README)")
         providers = data.get("providers") if isinstance(data, dict) else None
         if isinstance(providers, dict) and "fastmetal" in providers:
-            print(f"provider already configured: {config_file}")
-            return
-        if isinstance(providers, dict):
+            new_text = _refresh_legacy_fastmetal_block(text)
+            if new_text is None:
+                print(f"provider already configured: {config_file}")
+                print("不足するモデル定義があれば配布テンプレートを参照して手動で追加してください。")
+                return
+            action = "update"
+        elif isinstance(providers, dict):
             fail(
                 f"{config_file} has a 'providers' key without fastmetal. "
                 "auto-merge is not attempted to protect your settings. add the fastmetal block manually "
                 "(template: nepoforge/data/templates/provider-fastmetal.jsonc)"
             )
-        if not isinstance(data, dict):
+        elif not isinstance(data, dict):
             fail(f"{config_file} is not a JSON object. refusing to edit")
+        else:
+            new_text = insert_provider_block(text)
 
-        new_text = insert_provider_block(text)
         # 書き込み前に結果を検証する (壊れた設定を成功として書かない)
         try:
             parsed = jsonc.loads(new_text)
@@ -1104,7 +1164,7 @@ def apply_provider(dry_run: bool) -> None:
         new_text = '{\n  "$schema": "https://opencode.ai/config.json",\n' + block + "\n}\n"
 
     if dry_run:
-        print(f"[dry-run] would add FastMetal provider to: {config_file}")
+        print(f"[dry-run] would {action} FastMetal provider in: {config_file}")
         print(store.diff_text_vs(config_file if config_file.is_file() else None, new_text, str(config_file)), end="")
         print("dry-run: no changes made")
         return
@@ -1113,8 +1173,26 @@ def apply_provider(dry_run: bool) -> None:
         print(f"  [backup  ] {config_file} -> {backup}")
     config_file.parent.mkdir(parents=True, exist_ok=True)
     config_file.write_text(new_text, encoding="utf-8")
-    print(f"provider added (fastmetal): {config_file}")
+    past_tense = "updated" if action == "update" else "added"
+    print(f"provider {past_tense} (fastmetal): {config_file}")
     print("認証は既存の仕組みを使ってください (例: export FASTMETAL_API_KEY=... )。キーを設定ファイルに書かないこと。")
+
+
+def _refresh_legacy_fastmetal_block(text: str) -> str | None:
+    template = PROVIDER_TEMPLATE.read_text(encoding="utf-8").rstrip("\n")
+    for replacement in (template, dedent_two(template)):
+        lines = replacement.splitlines()
+        first, last = lines[0], lines[-1]
+        start = text.find("\n" + first + "\n") + 1
+        if not start:
+            continue
+        end = text.find("\n" + last + "\n", start)
+        if end < 0:
+            continue
+        end += len(last) + 1
+        if sha256_text(text[start:end]) in LEGACY_FASTMETAL_BLOCK_HASHES:
+            return text[:start] + replacement + text[end:]
+    return None
 
 
 def _comment_start(line: str) -> int | None:
@@ -1224,6 +1302,9 @@ def build_parser() -> argparse.ArgumentParser:
     pprofile.add_parser("list", help="利用可能なプロファイル一覧")
     pshow = pprofile.add_parser("show", help="プロファイルの内容を表示する")
     pshow.add_argument("name", nargs="?", default=None)
+    pcheck = pprofile.add_parser("check-primary", help="選択済みセッションのモデルを推奨値・価格と照合する (課金なし)")
+    pcheck.add_argument("--profile", help="照合するプロファイル (既定: 現行)")
+    pcheck.add_argument("--model", required=True, help="OpenCode が現在選択している provider/model[#variant]")
     puse = pprofile.add_parser("use", help="プロファイルを適用する")
     puse.add_argument("name")
     puse.add_argument("--dry-run", action="store_true")
@@ -1254,7 +1335,7 @@ def build_parser() -> argparse.ArgumentParser:
     pready.add_argument("--failed", help="失敗 task_id のカンマ区切り (後続は blocked)")
     pready.add_argument("--max-parallel", type=int, help="並列上限 (既定: プロファイル値)")
     pready.add_argument("--est-input", type=int, default=200_000, help="見積りの既定入力トークン上限 (タスク単位で上書き可)")
-    pready.add_argument("--est-output", type=int, default=50_000, help="見積りの既定出力トークン上限 (タスク単位で上書き可)")
+    pready.add_argument("--est-output", type=int, help="推論込み出力の見積り (省略時はタスク別規則、規則なしは 50000)")
     pready.add_argument("--retries", type=int, default=1, help="見積りに積む自動再試行回数 (既定 1)")
     pready.add_argument("--limit-yen", type=float, help="予算上限 (円)。未指定は未設定として起動を拒否する")
     pready.add_argument("--spent-yen", type=float, default=0.0, help="実績費用 (円・推定含む)")

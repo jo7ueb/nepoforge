@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import unittest
 
-from nepoforge import profiles, store
+from nepoforge import budget, derive, jsonc, profiles, store
 from nepoforge.store import NepoforgeError
 from tests._base import IsolatedEnv
 
@@ -143,6 +143,33 @@ class TestLoadProfileConfig(IsolatedEnv):
                 self.assertTrue(candidates.isdisjoint({
                     "fastmetal/beam-1.0", "fastmetal/kimi-k3.1-pro", "fastmetal/glm-5.3",
                 }))
+                self.assertTrue(set(config.roles.values()).issubset(candidates))
+                for item in derive.derive_plan(config):
+                    self.assertNotIn(str(item.model), derive.LEGACY_PREMIUM_MODELS)
+
+    def test_bundled_candidate_prices_provider_and_reasoning_agree(self) -> None:
+        template = (store.TEMPLATE_DIR / "provider-fastmetal.jsonc").read_text(encoding="utf-8")
+        models = jsonc.loads("{" + template + "}")["providers"]["fastmetal"]["models"]
+        for name in ("economy", "balanced", "performance"):
+            config = profiles.load_profile_config(name)
+            candidates = {str(candidate.ref): candidate for candidate in config.candidates}
+            self.assertIn(str(config.primary_model), candidates)
+            for model, candidate in candidates.items():
+                with self.subTest(profile=name, model=model):
+                    self.assertIn(model, budget.PRICES)
+                    self.assertTrue(candidate.no_training)
+                    provider_model = models[candidate.ref.model]
+                    self.assertEqual(provider_model["limit"]["context"], candidate.context_tokens)
+                    self.assertTrue(provider_model["capabilities"]["tools"])
+                    self.assertEqual(provider_model["compatibility"]["maxTokensField"], "max_tokens")
+                    reasoning = provider_model.get("body", {}).get("reasoning")
+                    self.assertEqual(reasoning, {
+                        "off": {"enabled": False}, "low": {"effort": "low"},
+                        "provider_default": None,
+                    }[candidate.reasoning])
+            for rule in config.task_rules:
+                provider_model = models[candidates[rule.model].ref.model]
+                self.assertLessEqual(rule.max_output_tokens, provider_model["limit"]["output"])
 
     def test_unknown_top_level_key_allowed(self) -> None:
         import json, tempfile

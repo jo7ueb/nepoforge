@@ -19,6 +19,7 @@ provider・OpenCode 側では支出の強制ができない (強制可能な制�
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, ROUND_CEILING
 from math import isfinite
 from typing import Mapping
@@ -40,6 +41,7 @@ PRICES: dict[str, tuple[float, float]] = {
     "fastmetal/beam-1.0": (67.2, 201.6),
     "fastmetal/gemma-4-26b-a4b-it": (11.76, 57.12),
     "fastmetal/gpt-oss-20b": (5.04, 23.52),
+    "fastmetal/gpt-oss-120b": (16.0, 79.0),
     "fastmetal/japan-qwen3-swallow-8b": (5.5, 27.0),
     "fastmetal/japan-deepseek-v4.1-flash-1017-validation": (33.6, 134.4),
     "fastmetal/llama-3.1-8b-instruct": (3.36, 6.72),
@@ -47,6 +49,15 @@ PRICES: dict[str, tuple[float, float]] = {
 }
 
 PRICE_BASIS = "2026-11-26"
+PRICE_VALID_THROUGH = {"fastmetal/japan-deepseek-v4.1-flash-1017": date(2026, 12, 4)}
+
+
+def expired_price(model: str, on_date: date | None = None) -> bool:
+    expiry = PRICE_VALID_THROUGH.get(model)
+    if expiry is None:
+        return False
+    today = on_date or datetime.now(timezone(timedelta(hours=9))).date()
+    return today > expiry
 
 
 @dataclass(frozen=True)
@@ -136,6 +147,7 @@ def decide_launch(
     *,
     provider_budget_error: bool = False,
     prices: Mapping[str, tuple[float, float]] = PRICES,
+    on_date: date | None = None,
 ) -> LaunchDecision:
     """有料起動を許すかを判定する。
 
@@ -159,6 +171,12 @@ def decide_launch(
         return LaunchDecision(
             allowed=False,
             reason=f"unknown price for model: {est.model} (deny paid launch)",
+            price_basis=PRICE_BASIS,
+        )
+    if expired_price(est.model, on_date):
+        return LaunchDecision(
+            allowed=False,
+            reason=f"price expired for model: {est.model} (confirm current price before paid launch)",
             price_basis=PRICE_BASIS,
         )
     if state.limit_yen is None:
