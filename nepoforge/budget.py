@@ -38,6 +38,9 @@ class BudgetError(NepoforgeError):
 PRICES: dict[str, tuple[float, float]] = {
     "fastmetal/japan-deepseek-v4.1-flash-1017": (33.6, 134.4),
     "fastmetal/japan-glm-5.3-flash": (17.64, 58.8),
+    # reasoning variant の別名 (#12 の実行で実測)。variant は推論努力の指定であり
+    # 単価はベースと同一 (#61 掲載値)。gate のモデル突合は variant を含む ID で行う。
+    "fastmetal/japan-glm-5.3-flash#medium": (17.64, 58.8),
     "fastmetal/beam-1.0": (67.2, 201.6),
     "fastmetal/gemma-4-26b-a4b-it": (11.76, 57.12),
     "fastmetal/gpt-oss-20b": (5.04, 23.52),
