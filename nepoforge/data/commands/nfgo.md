@@ -31,7 +31,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 
 ## ステップ 3: 各 Issue の開発ワークフロー (AGENTS.md に従う)
 
-指定された Issue だけを対象にする。以下を 1 Issue ずつ完結させる。
+指定された Issue だけを対象にする。以下を 1 Issue ずつ完結させる。配布 `/nfgo` は必ず strict plan contract を使い、legacy CLI 経路へ切り替えない。
 
 **ブランチとドラフト PR は 3.1 より前に作る** (AGENTS.md「PR ルール」)。最初のコミットを push した時点で `Refs #N` 付きのドラフト PR を作成し、以後のコミットを随時 push する。レビュー可能になってから 3.6 で Ready for review に変更する。3.6 は PR の新規作成ステップではなく、本文の整備と Ready への変更を指す。
 
@@ -43,6 +43,14 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 
 ### 3.0 タスク分解
 
+- 初回の要求理解と計画作成後、全作業を PLAN に宣言する。PLAN は `{schema_version:1, issue_ref, deliverables:[独立確認可能な成果物ID...], tasks:[...]}`。各 task は既存 TaskSpec に `executor: agent|tool|primary`、`stage: requirements|research|design|implementation|test|review|integration`、`deliverables` を加え、各成果物をちょうど一タスクに割り当てる。
+- strict 検証は `nepoforge plan validate PLAN --contract [--approved-exception TASK_ID] [--json]`。`tool` は `task_kind` が `test/ci-status/git/diagnostics` の決定的作業のみで、追跡ファイルを編集しない。`primary` は `{exception:{reason:inseparable|delegation_cost|human_approved,detail:...,scope:write_scopeと同一}}` が必要。`human_approved` は人間の承認を得たうえで、該当 TASK_ID の `--approved-exception` を strict validate と strict ready の両方に指定する。例外承認を他の task に流用しない。
+- PLAN の依存関係で要求理解→調査→設計→実装→テストの順を保つ。工程内の独立タスクおよび依存が受理済みのタスクは並列起動できる。工程全件を待つバリアは作らない。
+- 人間承認済み上限に親の既発生費用と追加分を含め、開始・再試行の直前に最新 snapshot で `nepoforge plan ready PLAN --contract --run-id ID --gate GATE --limit-yen ... [--approved-exception TASK_ID] --json` を再実行する。例外は人間の承認がある task に限り、validate と ready の両方に指定する。strict では `--accepted/--running/--failed/--spent-yen/--reserved-yen/--budget-error` を手入力しない。
+- GATE は実装済み schema に合わせ、`{run_id,plan_sha256,started_ms,as_of_ms,primary,attempts,budget_error}` とする。`primary` は `{session_id,spent_yen,reserved_yen,outcome:running|accepted|failed,ended_ms:null|ms,success,messages:[]}`。`success` は outcome が `accepted` の場合のみ真。各 attempt は `{task_id,attempt,session_id,started_ms,ended_ms,model,reserved_yen,spent_yen,outcome,messages,exit_code,success,failure_reason}` を持つ。`exit_code` は tool の終了コード、`success` は primary が判定する結果、`failure_reason` は実行失敗時の理由であり、`execution_failure` のみ再試行対象。未取得の費用等を 0 と偽らず null/unknown とする。
+- 観測には既存 OpenCode V2 API を使う。`GET /api/session/{sessionID}/message?type=assistant&limit=...` は `.data[]` の `id,agent,model,time.created,tokens,cost` を返し cursor でページングする。`GET /api/session/{sessionID}` から親子関係の session 情報を別途取得し、実フィールドは API schema またはツール出力で確認する。正規化 message は `{id,session_id,parent_session_id?,agent,model:{providerID,id,variant?},created_ms}` とし、親 message に `parent_session_id` は不要。`created_ms` は必須で、対象区間 `[started_ms,ended_ms]` 内であること。本文は出力・保存しない。メッセージ本文や機密を表示するフィルタは禁止し、session ID の自己申告で API 観測を代替しない。親の直接作業の例外は親と同一 session ID の場合だけで、親証拠を共用し attempt の `messages` に複製しない。tool は session でない一意なローカル記録 ID を使い、`messages:[]`、費用欄は null とする。
+- 各工程の進捗メッセージには進行中タスクとモデルを記載し、選択モデル (`selected`) と API 観測後の実行モデル (`actual`) を別々に示す。未観測は `unknown` と明記する。
+- 予算拒否・権限拒否・モデル不一致/未観測から、Primary の直接実装・別 executor・別モデルへ迂回しない。決定的ツールによるローカル計測を使い、追加モデル起動は禁止。設定変更と課金実機試験はしない。
 - primary が Issue 本文から作業項目・依存関係・完了条件を洗い出す。
 - 変更が局所的で受入条件が明確な場合は、既存テスト・資料と最小限のコード確認で方針を定める。独立した問いや設計判断がなければ 3.1・3.2 の子は起動せず、実装は 1 件でよい。独立レビュー・必要なテスト・PR は行う。
 - 規模・リスクが大きい場合は判断が必要な問いだけ委譲する。軽量モデルで足りる粒度への分割、入力の限定、決定的なツールでの代替を先に検討し、難しい統合判断や高リスクの根拠は計画に記録する。
@@ -107,7 +115,7 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 
 ### タスク計画の管理 (Coordinator 規則)
 
-- **機械判定 (`nepoforge plan` — 課金なし)**: `nepoforge plan validate <計画JSON>` で計画を検証し、起動の直前に `nepoforge plan ready <計画JSON> --json` を最新状態・残予算で実行する。計画 JSON は `{"tasks": [...]}` 形式。`launch` に含まれるタスクだけを起動し、`denied` の理由を報告する。
+- **機械判定 (`nepoforge plan` — 課金なし)**: 配布 `/nfgo` は必ず strict 契約で `nepoforge plan validate PLAN --contract [--approved-exception TASK_ID] [--json]` を実行し、各起動・再試行直前に `nepoforge plan ready PLAN --contract --run-id ID --gate GATE --limit-yen ... [--approved-exception TASK_ID] --json` を最新 snapshot で再実行する。legacy CLI や手入力状態フラグには切り替えない。`launch` に含まれる task_id だけを起動し、`denied` の理由を報告する。strict の起動記録 `launch_details` は各起動について `{task_id,executor,stage,attempt}` を保持し、`launch` と対応付ける。`denied` を迂回して起動しない。
 
 - **task_id**: `T1`、`T2` の形式で計画内一意に採番する。OpenCode の報告は子セッションの sessionID 単位で届くため、起動時に task_id と sessionID を対応付けて管理する。
 - **起動前に拒否する計画**: permissions・送信先の指定を含む / expert・explore・reviewer で write_scope が空でない / depends_on が循環・自己参照・不明な task_id。いずれも起動せず計画を修正する。
@@ -122,19 +130,19 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
   2. write_scope が重複する running 中のタスクがない (同じ編集領域を同時に動かさない)。
   3. 予算・時間の既定上限内である (未設定を無制限と解釈しない)。予算の判定は `nepoforge plan ready` が `nepoforge.budget.decide_launch` の規則 (設計メモ 0008) に従って実施する。価格不明・上限未設定・予算不足・予算超過後の停止モードでは起動しない。
   4. 同時 running 数が並列上限内である。既定上限 10 であり、ユーザー承認済みの並列上限・予算・プロバイダー制約に従って調整する (プロファイルの `constraints.max_parallel` で設定し、`nepoforge profile show` で確認する)。未設定・未知を無制限と解釈せず、上限・予算を無断で引き上げない。
-- **起動順と精算**: Coordinator だけが最新の `--accepted` / `--running` / `--failed`、総上限 `--limit-yen`、実績 `--spent-yen`、既に起動済みの未精算分 `--reserved-yen` を渡して判定する。トークン・再試行の見積りはタスクの規模に合わせて設定する。`reservations_yen` は許可済みバッチ内で累積判定した金額で、実際に起動した分だけ次回判定に持ち越す。終了時は予約を外し、実績 (失敗・再試行分も含む) を加える。次バッチや再試行の直前は再判定する。依存が受理されたタスクから、工程を一括で待たず空き枠を使う。
+- **起動順と精算**: 起動可能タスクは strict `plan ready` の `launch` / `denied` 判定に従う。Coordinator は `launch` の task_id だけを `launch_details` の `executor`・`stage`・`attempt` と対応付けて起動する。CLI が返す予約額を許可済み起動分についてのみ次回判定へ引き継ぎ、完了時は実績に精算する (失敗・再試行分も含む)。状態・費用を独自フラグで上書きせず、次バッチや再試行の直前に最新 snapshot で再判定する。依存が受理されたタスクから、工程を一括で待たず空き枠を使う。
 - `model_resolutions` の `max_output_tokens` は推論込みの見積り上限。ツール往復・キャッシュを含む総入力と、回答・推論を含む総出力を見積もる。タスクが上限に収まらない場合は分割または停止する。OpenCode のモデル設定は一回のリクエストに関わるもので、セッション全体の出力や支出の強制上限ではない。
 - **blocked**: 必須依存が失敗した後続タスクは起動しない。無関係なタスクは止めない。依存の再実行と受理後に起動判定へ戻す。依存を断念する場合は後続も取り消して報告する。
-- **再試行上限**: 実行失敗 (error・受理拒否) の自動再委譲は、同一 task_id・同一モデルで予算ゲートを通過した場合に 1 回まで。モデルの不適格・利用不能や予算拒否を、再試行や primary の有料実施で迂回しない。
-- **予算超過時**: provider の予算超過 (`Budget has been exceeded` 等) を検知したら、以後の判定に `--budget-error` を指定して新規有料起動と自動再試行を即時停止する。安全に停止できる進行中有料タスクは停止し、状態と理由を報告する。再開は人間の明示承認後のみ。課金なしのローカル検証は継続してよい (設計メモ 0008)。
+- **再試行上限**: 計画に `retries:1` と宣言した場合に限り、`execution_failure` による自動再委譲を同一 task_id・同一モデルで最大 1 回行える。再試行の起動指示にも attempt 番号を含め、直前に最新 snapshot・予算を再確認する。初回実行モデルの証明が得られない場合は再試行しない。受理拒否・モデル不適格/利用不能・権限/予算拒否は実行失敗ではなく再試行しない。これらを primary の有料実施や別モデルで迂回しない。
+- **予算超過時**: provider の予算超過 (`Budget has been exceeded` 等) を検知したら、その事実を `run_report` に記録し、strict ready が予算エラーとして拒否する状態にする。新規有料起動と自動再試行を即時停止する。安全に停止できる進行中有料タスクは停止し、状態と理由を報告する。再開は人間の明示承認後のみ。課金なしのローカル検証は継続してよい (設計メモ 0008)。
 - **委譲しない作業**: 標準ツール (テスト実行・検索・集計など) で決定的に達成でき、判断を要しない作業は委譲せず primary が遂行する。
 
 ### 子の報告の扱い (TaskResult)
 
 - 子の報告は idle ごとに届く。`state="running"` は中間報告であり、完了とみなさない。`state="completed"` / `error` を確認して次に進む。
 - `state="completed"` の報告は TaskResult 慣約で受け取る: status (succeeded / failed / blocked。cancelled は primary 側の取消で発生する)・summary・根拠 (パス・差分・sessionID)・acceptance_results (完了条件ごとの判定)。actual_model は把握できない場合「unknown」と明記させる。
-- primary は acceptance_criteria と acceptance_results を照合して受理する。受理されるまで後続の必須依存は満たした扱いにしない。受理できない場合は再委譲 (再試行上限内)・逐次実施・停止報告を判断する。
-- 子が `error` で終了しても、依存しない他の作業は止めない。失敗したタスクについてのみ再委譲・逐次実施・停止報告を判断する。
+- primary は acceptance_criteria と acceptance_results を照合して受理する。受理されるまで後続の必須依存は満たした扱いにしない。受理できない場合は strict gate の再試行条件を満たす再委譲、または停止報告を判断する。Coordinator による直接実施へのフォールバックはしない。
+- 子が `error` で終了しても、依存しない他の作業は止めない。失敗したタスクについてのみ実行失敗ポリシーに従って再委譲し、条件を満たさなければ停止報告する。直接実施へのフォールバックはしない。
 - 並列委譲を行った場合は、その旨をステップ 4 の報告に含める。
 
 停止条件 (実装を続けず人間に確認する):
@@ -158,4 +166,4 @@ description: 指定 Issue を規模に応じて実装し、独立レビュー・
 
 ## ステップ 4: 報告
 
-最後に、各 Issue ごとに次を報告する: 作成した PR と関連 Issue、実行した検証と結果、残存課題・既知の限界。PR が作れなかった場合は理由と途中成果物を報告する。
+最後に、単一 Issue・複数 Issue のいずれでも、実行全体の `run_report` を正本として、正常・失敗・拒否・途中終了を問わず総計の壁時計時間、費用（実額/推定と根拠/不明）、承認済み上限、選択/実行モデルと証拠、実施した検証と結果を必ず報告する。各 Issue への費用等の帰属は、正確に特定できる場合に限り内訳として示し、不明な値は `unknown` と明記する。親子別内訳と子費用の重複有無も `run_report` で確認できる範囲で記す。加えて作成した PR と関連 Issue、残存課題・既知の限界を記す。PR が作れなかった場合は理由と途中成果物を報告する。契約の実行前機械判定を行い、管理外の作業・支出や信頼できない入力を完全には強制/検知できない限界も明示する。

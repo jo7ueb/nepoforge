@@ -14,6 +14,8 @@
 
 本設計は、並列委譲の方式を確定した [設計メモ 0004](0004-parallel-delegation.md) の**上位に契約層を重ねる**ものであり、0004 の決定 (委譲の集約先は primary、権限変更なし、委譲契約必須化) を変更しない。[architecture.md](../architecture.md) §3.1 の委譲と並列実行の規定と矛盾しない。
 
+本書は TaskSpec / ModelResolution / TaskResult の既存共通論理契約を定める設計標準である。後続の strict run gate の実行時フィールド・CLI・記録は[設計メモ 0011](0011-delegation-first.md)を参照し、本書の契約を置き換えたり legacy CLI 互換性を廃止したりするものではない。配布 `/nfgo` の実行経路は strict とし、strict `launch` による起動と `launch_details` の `{task_id,executor,stage,attempt}` 対応を必須にする。人間承認済み例外では同一 TASK_ID を strict validate と strict ready の双方に `--approved-exception` として渡す。実行全体の総計は `run_report` を正本とし、精密に帰属できない Issue 別値は `unknown` とする。
+
 ### 1.1 スコープ
 
 - 対象: 単一 Issue 内のタスク分解・委譲・モデル選択・レビューの論理契約と、OpenCode v2 での実現方式。
