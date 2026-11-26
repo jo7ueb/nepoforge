@@ -29,8 +29,10 @@ class RuntimePluginContract(unittest.TestCase):
         self.assertIn('import type { Plugin as PluginTypes } from "@opencode/plugin"', self.source)
 
     def test_generated_session_method_arguments_and_wrapping(self):
-        self.assertIn("session.get({ sessionID: root })", self.source)
-        self.assertIn("session.get({ sessionID: id })", self.source)
+        self.assertIn("getSession(root)", self.source)
+        self.assertIn("getSession(id)", self.source)
+        self.assertIn("session.get({ sessionID })", self.source)
+        self.assertIn("session lookup timed out", self.source)
         self.assertIn("session.interrupt({ sessionID: id, resume: false })", self.source)
         self.assertIn("response.interrupted", self.source)
         self.assertNotIn("path: { id", self.source)
@@ -60,6 +62,8 @@ class RuntimePluginContract(unittest.TestCase):
         self.assertIn("failureIdentity(sessionID, callID)", self.source)
         self.assertIn("recordFailure(p.sessionID, p.id, p.error)", self.source)
         self.assertIn("recordFailure(result.sessionID, result.id, result.error)", self.source)
+        self.assertIn("if (inScope(retry.sessionID) && (latched || monitorFailed))", self.source)
+        self.assertIn("if (inScope(call.sessionID) && (latched || monitorFailed))", self.source)
         self.assertIn("const targets = [...sessions.keys()].filter(inScope)", self.source)
         self.assertIn("registration.dispose()", self.source)
         self.assertNotIn("experimental.session.compacting", self.source)

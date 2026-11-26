@@ -72,12 +72,25 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       sessions.set(session.id, session.parentID)
       if (latched && inScope(session.id)) void interruptOne(session.id)
     }
-    const resolveScope = (id: string) => resolveSessionScope(
+    const getSession = async (sessionID: string) => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      try {
+        return await Promise.race([
+          session.get({ sessionID }),
+          new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(() => reject(new Error("session lookup timed out")), 2000)
+          }),
+        ])
+      } finally {
+        if (timer !== undefined) clearTimeout(timer)
+      }
+    }
+    const resolveScope = (id: string): Promise<boolean | undefined> => resolveSessionScope(
       id,
       roots,
       sessions,
       async (sessionID) => {
-        const record = await session.get({ sessionID })
+        const record = await getSession(sessionID)
         return record ? normalizeSessionRecord(record) : undefined
       },
       async (sessionID) => {
@@ -127,9 +140,15 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       if (count >= 3) await latch()
     }
     const countUsageEvent = async (evt: AnyRecord) => {
+      const sessionID = evt?.properties?.sessionID
+      if (typeof sessionID !== "string" || !sessionID) {
+        throw new Error("usage event is missing sessionID")
+      }
+      const scoped = await resolveScope(sessionID)
+      if (scoped === false) return
+      if (scoped !== true) throw new Error("session ancestry unavailable")
       const usage = normalizeUsageEvent(evt)
-      const { sessionID, costUSD, tokens: tokenCount, assistantMessageID } = usage
-      if (!(await resolveScope(sessionID))) throw new Error("session ancestry unavailable")
+      const { costUSD, tokens: tokenCount, assistantMessageID } = usage
       if (evt.type === "session.usage.updated") {
         // Session cumulative source has no assistantMessageID; replace by session.
         sessionUsage.set(sessionID, { costUSD, tokens: tokenCount })
@@ -147,13 +166,13 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
     const listed = await session.list()
     for (const item of listed) track(item)
     for (const root of roots) {
-      const result = await session.get({ sessionID: root })
+      const result = await getSession(root)
       if (!result) throw new Error("configured root session unavailable")
       track(result)
     }
     for (const id of sessions.keys()) {
       if (inScope(id) && !roots.has(id)) {
-        const result = await session.get({ sessionID: id })
+        const result = await getSession(id)
         if (result) track(result)
       }
     }
@@ -161,18 +180,18 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
     const registrations = await Promise.all([
       session.hook("retry", async (input) => {
         const retry = input as AnyRecord
-        if ((await resolveScope(retry.sessionID)) && (latched || monitorFailed)) {
+        if (inScope(retry.sessionID) && (latched || monitorFailed)) {
           retry.decision = { retry: false }
         }
       }),
       tool.hook("execute.after", async (input) => {
         const result = input as AnyRecord
-        if (!(await resolveScope(result.sessionID)) || result.status !== "error") return
+        if (!inScope(result.sessionID) || result.status !== "error") return
         await recordFailure(result.sessionID, result.id, result.error)
       }),
       tool.hook("execute.before", async (input) => {
         const call = input as AnyRecord
-        if ((await resolveScope(call.sessionID)) && (latched || monitorFailed)) {
+        if (inScope(call.sessionID) && (latched || monitorFailed)) {
           throw new ToolError({ message: "Runtime guard latched; tool execution rejected" })
         }
       }),
@@ -185,24 +204,30 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
         await countUsageEvent(row)
       } else if (row.type === "session.tool.failed") {
         const p = row.properties ?? {}
-        if (typeof p.sessionID !== "string" || !(await resolveScope(p.sessionID))) return
+        if (typeof p.sessionID !== "string") throw new Error("tool failure event is missing sessionID")
+        const scoped = await resolveScope(p.sessionID)
+        if (scoped === false) return
+        if (scoped !== true) throw new Error("tool failure session ancestry unavailable")
         await recordFailure(p.sessionID, p.id, p.error)
       } else if (row.type === "session.created") {
         const p = row.properties ?? {}
+        // The global event stream also contains sessions outside this runtime scope.
+        // An unrelated malformed creation event must not latch this run.
+        if (typeof p.sessionID !== "string" || !p.sessionID) return
         track({ id: p.sessionID, parentID: p.parentID })
       }
     }
     const handleEventError = async (_error: unknown, row: AnyRecord) => {
-      // A malformed or out-of-order event degrades this run and latches known in-scope
-      // sessions, but does not terminate the event stream for later observations.
-      monitorFailed = true
+      // Only latch if the event is known or could not be proven outside this scope.
+      // A malformed event from a confirmed unrelated session is ignored.
       if (typeof row?.properties?.sessionID === "string") {
         try {
-          await resolveScope(row.properties.sessionID)
+          if (await resolveScope(row.properties.sessionID) === false) return
         } catch {
           // Keep the failure latched without guessing that an unrelated session is in scope.
         }
       }
+      monitorFailed = true
       latch()
     }
     const monitor = (async () => {

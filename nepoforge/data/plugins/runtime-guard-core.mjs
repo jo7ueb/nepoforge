@@ -35,7 +35,7 @@ export async function resolveSessionScope(id, roots, sessions, loadSession, onSc
     seen.add(current)
     if (!sessions.has(current)) {
       const row = await loadSession(current)
-      if (!row) return false
+      if (!row) return undefined
       const session = normalizeSessionRecord(row)
       sessions.set(session.id, session.parentID)
     }

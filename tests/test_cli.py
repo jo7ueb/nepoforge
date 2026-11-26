@@ -96,7 +96,8 @@ class TestLifecycle(IsolatedEnv):
         for agent in store.USER_AGENT_IDS:
             self.assertTrue((agents_dir / f"{agent}.md").is_file())
         self.assertTrue((store.opencode_dir() / "commands" / "nfgo.md").is_file())
-        self.assertTrue((store.opencode_dir() / "plugins" / "runtime-guard.ts").is_file())
+        for rel in store.USER_PLUGINS:
+            self.assertTrue((store.opencode_dir() / rel).is_file(), rel)
         manifest = store.load_manifest(store.manifest_path())
         self.assertEqual(manifest["kind"], "user")
         self.assertEqual(manifest["profile"], "balanced")
@@ -196,7 +197,8 @@ class TestLifecycle(IsolatedEnv):
         self.assertEqual(cli.main(["uninstall", "--projects"]), 0)
         self.assertFalse(store.manifest_path().is_file())
         self.assertFalse((store.opencode_dir() / "agents" / "architect.md").is_file())
-        self.assertFalse((store.opencode_dir() / "plugins" / "runtime-guard.ts").exists())
+        for rel in store.USER_PLUGINS:
+            self.assertFalse((store.opencode_dir() / rel).exists(), rel)
         self.assertEqual(store.load_projects(), [])
 
     def test_init_dry_run_makes_no_changes(self) -> None:

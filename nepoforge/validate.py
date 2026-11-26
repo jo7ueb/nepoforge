@@ -240,7 +240,7 @@ def check_commands() -> tuple[list[dict[str, str]], set[str]]:
 
 
 def check_plugins() -> list[dict[str, str]]:
-    """グローバル管理対象の runtime plugin が配布データに存在することを検査する。"""
+    """グローバル管理対象の runtime plugin と依存モジュールを検査する。"""
     problems: list[dict[str, str]] = []
     for rel in store.USER_PLUGINS:
         path = store.DATA_DIR / rel

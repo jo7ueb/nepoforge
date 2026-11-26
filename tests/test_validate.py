@@ -120,6 +120,12 @@ class TestInvalidSettingsAreDetected(unittest.TestCase):
             "managed plugin is missing",
         )
 
+    def test_missing_runtime_plugin_dependency(self) -> None:
+        self.assert_detected(
+            lambda root: (root / "plugins/runtime-guard-core.mjs").unlink(),
+            "managed plugin is missing",
+        )
+
     def test_profile_with_unknown_role(self) -> None:
         def mutate(root: Path) -> None:
             path = root / "profiles/balanced.json"
