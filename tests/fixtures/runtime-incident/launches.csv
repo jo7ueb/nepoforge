@@ -1,0 +1,6 @@
+task_id,attempt,executor,session_alias,dispatch_rel_ms,completed_rel_ms,outcome,failure_reason,exit_code,reserved_yen,spent_yen_est
+T0,1,primary,primary,503999,623999,accepted,,,0,0
+T1,1,agent(implementer),child-T1-a1,734973,1422268,failed,cancelled,,1.3911,148.7266
+T5,1,primary(direct),primary,2203999,2264999,accepted,,,0,0
+T2,1,tool(unittest),tool-t2-discover,2398524,2403524,accepted,,0,,
+T3,1,agent(reviewer),child-T3-a1,2437380,2450550,accepted,,,1.3911,0.2791
