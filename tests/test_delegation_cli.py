@@ -9,6 +9,7 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from nepoforge import cli
+from nepoforge import budget
 from nepoforge import profiles
 
 from ._base import IsolatedEnv
@@ -67,11 +68,15 @@ class TestStrictDelegationCLI(IsolatedEnv):
         spent_yen: int = 0,
     ) -> str:
         primary_model = profiles.load_profile_config("balanced").primary_for("private")
+        rates = budget.price_for(profiles.format_model(primary_model)) if primary_model else None
+        input_tokens = int(spent_yen * 1_000_000 / rates[0]) if rates and spent_yen else 0
         primary_message = {
             "id": "parent-message", "session_id": "ses-parent", "created_ms": 120,
             "agent": "build",
             "model": {"providerID": primary_model.provider, "id": primary_model.model,
                       "variant": primary_model.variant},
+            "tokens": {"input": input_tokens, "output": 0, "reasoning": 0, "cache": {}},
+            "cost": 0,
         } if primary_model else None
         gate = self.work / "gate.json"
         gate.write_text(json.dumps({
@@ -208,14 +213,14 @@ class TestStrictDelegationCLI(IsolatedEnv):
             self.attempt("one", "ses-one", 110, 200),
         ], spent_yen=5)
         summary = self.report(plan, gate, "--limit-yen", "100", "--json")
+        self.assertLess(abs(float(summary["cost"]["total"]) - 5), 0.001)
         self.assertEqual(summary["walltime_text"], "0秒")
         self.assertEqual(summary["outcome"], "running")
         self.assertEqual(summary["cost"]["state"], "estimated")
-        self.assertEqual(summary["cost"]["total"], "5")
-        self.assertEqual(summary["cost"]["primary"], "5")
+        self.assertEqual(summary["cost"]["total"], summary["cost"]["primary"])
         self.assertEqual(summary["cost"]["children"], "0")
         self.assertIn("価格基準日", summary["cost"]["basis"])
-        self.assertEqual(summary["budget"]["remaining_yen"], "95.0")
+        self.assertLess(abs(float(summary["budget"]["remaining_yen"]) - 95), 0.001)
         self.assertEqual(summary["budget"]["over"], False)
 
         text = io.StringIO()
@@ -231,7 +236,10 @@ class TestStrictDelegationCLI(IsolatedEnv):
         self.assertIn("予算: 上限 約 100.00円 / 残り 95.00円", rendered)
 
     def test_plan_report_marks_unknown_cost_without_zero(self) -> None:
-        plan, digest = self.plan([task("one", "test", "D1")])
+        plan, digest = self.plan([
+            task("one", "test", "D1", executor="agent", role="explore",
+                 responsibility="leaf", complexity="low", risk="low"),
+        ])
         # モデル証拠のない gate (親の messages が空) → 費用は unknown
         gate_path = self.work / "gate-unknown.json"
         gate_path.write_text(json.dumps({
@@ -247,6 +255,10 @@ class TestStrictDelegationCLI(IsolatedEnv):
         self.assertEqual(summary["cost"]["total"], "unknown")
         self.assertEqual(summary["cost"]["reason"], "primary model/cost evidence unavailable")
         self.assertEqual(summary["budget"]["remaining_yen"], "unknown")
+
+        ready = self.ready(plan, str(gate_path))
+        self.assertEqual(ready["launch"], [])
+        self.assertIn("runtime guard latched", ready["denied"][0]["reason"])
 
         text = io.StringIO()
         with redirect_stdout(text):
@@ -265,7 +277,7 @@ class TestStrictDelegationCLI(IsolatedEnv):
                 cli.main(["plan", "report", plan, "--run-id", "r1", "--gate", gate])
         summary = self.report(plan, gate, "--limit-yen", "1", "--json")
         self.assertEqual(summary["budget"]["over"], True)
-        self.assertEqual(summary["budget"]["remaining_yen"], "-4.0")
+        self.assertLess(float(summary["budget"]["remaining_yen"]), -3.99)
 
     def test_tool_dependencies_and_verified_agent_model_unlock_in_order(self) -> None:
         tasks = [
@@ -291,6 +303,8 @@ class TestStrictDelegationCLI(IsolatedEnv):
             "parent_session_id": "ses-parent", "created_ms": 180,
             "agent": empty["model_resolutions"]["validate"]["binding"],
             "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it", "variant": None},
+            "tokens": {"input": 1000, "output": 0, "reasoning": 0, "cache": {}},
+            "cost": 0,
         }
         validate_attempt = self.attempt("validate", "ses-validate", 150, 200)
         validate_attempt.update({
@@ -323,6 +337,23 @@ class TestStrictDelegationCLI(IsolatedEnv):
 
         available = self.ready(plan, self.write_gate(digest, [], spent_yen=0))
         self.assertEqual(available["launch"], ["light"])
+
+    def test_strict_ready_accumulates_runtime_guard_launch_reservations(self) -> None:
+        tasks = [
+            task(
+                task_id, "implementation", f"D{index}", role="explore",
+                executor="agent", task_kind=None, responsibility="leaf",
+                complexity="low", risk="low", write_scope=[],
+            )
+            for index, task_id in enumerate(("light-a", "light-b"), start=1)
+        ]
+        plan, digest = self.plan(tasks)
+        gate = self.write_gate(digest, [])
+        result = self.ready(plan, gate, "--limit-yen", "4")
+        self.assertEqual(len(result["launch"]), 1)
+        self.assertEqual(len(result["reservations_yen"]), 1)
+        self.assertEqual(len(result["denied"]), 1)
+        self.assertIn("budget", result["denied"][0]["reason"])
 
     def test_primary_exception_completion_unlocks_child_and_charges_parent_once(self) -> None:
         primary = task(
@@ -367,6 +398,8 @@ class TestStrictDelegationCLI(IsolatedEnv):
             "parent_session_id": "ses-parent", "created_ms": 195,
             "agent": released["model_resolutions"]["child-check"]["binding"],
             "model": {"providerID": provider, "id": model_id, "variant": None},
+            "tokens": {"input": 1000, "output": 0, "reasoning": 0, "cache": {}},
+            "cost": 0,
         }
         completed_child = self.attempt("child-check", "ses-child", 190, 220)
         completed_child.update({
@@ -386,8 +419,18 @@ class TestStrictDelegationCLI(IsolatedEnv):
             if row["decision"] == "accepted"
         }
         self.assertEqual(accepted, {"primary-work", "child-check"})
-        self.assertEqual(completed["run_report"]["costs"]["total_spent_yen"], "7")
-        self.assertEqual(completed["run_report"]["costs"]["primary_spent_yen"], "3")
+        self.assertAlmostEqual(
+            float(completed["run_report"]["tasks"][1]["cost_yen"]), 0.01176,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            float(completed["run_report"]["costs"]["total_spent_yen"]), 3.011736,
+            places=5,
+        )
+        self.assertAlmostEqual(
+            float(completed["run_report"]["costs"]["primary_spent_yen"]), 3,
+            places=4,
+        )
 
 
 if __name__ == "__main__":

@@ -3,6 +3,7 @@ import {
   canAccountUsageEvent,
   consumeEvents,
   failureIdentity,
+  isProviderBudgetError,
   isInScope,
   normalizeSessionRecord,
   normalizeUsageEvent,
@@ -48,6 +49,8 @@ await assert.rejects(
 // Hook and event both identify a failure by the OpenCode tool-call ID.
 assert.equal(failureIdentity("root", "call-1"), failureIdentity("root", "call-1"))
 assert.notEqual(failureIdentity("root", "call-1"), failureIdentity("child", "call-1"))
+assert.equal(isProviderBudgetError({ message: "Budget has been exceeded!" }), true)
+assert.equal(isProviderBudgetError({ message: "permission denied" }), false)
 
 const usage = normalizeUsageEvent({
   type: "session.usage.updated",

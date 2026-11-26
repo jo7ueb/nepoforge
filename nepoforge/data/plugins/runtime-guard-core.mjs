@@ -16,6 +16,15 @@ export function failureIdentity(sessionID, callID) {
   return JSON.stringify([sessionID, callID])
 }
 
+export function isProviderBudgetError(error) {
+  const message = typeof error === "string"
+    ? error
+    : error && typeof error === "object" && typeof error.message === "string"
+      ? error.message
+      : ""
+  return message.toLowerCase().includes("budget has been exceeded")
+}
+
 export function isInScope(id, roots, sessions) {
   let current = id
   const seen = new Set()

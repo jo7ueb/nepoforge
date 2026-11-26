@@ -69,6 +69,22 @@ class TestDecideLaunch(unittest.TestCase):
         self.assertFalse(d.allowed)
         self.assertIn("not set", d.reason)
 
+    def test_non_finite_or_negative_budget_state_denied(self) -> None:
+        corruptions = (
+            ("limit_yen", float("nan")),
+            ("limit_yen", float("inf")),
+            ("limit_yen", -1),
+            ("spent_yen", float("nan")),
+            ("reserved_yen", -1),
+        )
+        for field, value in corruptions:
+            state = BudgetState(limit_yen=LIMIT)
+            object.__setattr__(state, field, value)
+            with self.subTest(state=state):
+                decision = decide_launch(state, _est())
+                self.assertFalse(decision.allowed)
+                self.assertIn("invalid budget state", decision.reason)
+
     def test_unknown_price_denied_even_with_budget(self) -> None:
         state = BudgetState(limit_yen=LIMIT)
         d = decide_launch(state, _est(model="fastmetal/kimi-k3.1-pro"))

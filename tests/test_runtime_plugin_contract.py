@@ -56,6 +56,7 @@ class RuntimePluginContract(unittest.TestCase):
             'row.type === "session.tool.failed"', 1
         )[0]
         self.assertIn("if (canAccountUsageEvent(row))", step_failed)
+        self.assertIn("isProviderBudgetError(p.error)", step_failed)
         self.assertIn("session lookup identity mismatch", self.core_source)
         self.assertIn("stepUsage.set(`${sessionID}:${assistantMessageID}`", self.source)
         self.assertIn("if (cumulative) {", self.source)

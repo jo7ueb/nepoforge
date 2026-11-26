@@ -50,6 +50,35 @@ class DelegationRunTests(unittest.TestCase):
         self.assertIsNone(state.spent_yen)
         self.assertTrue(state.report["unknown_cost"])
 
+    def test_runtime_usage_reprices_in_yen_and_latches_paid_launch(self):
+        from nepoforge.runtime_guard import RuntimeGuard
+
+        model = "fastmetal/gemma-4-26b-a4b-it"
+        document = {
+            "run_id": "r", "plan_sha256": "h", "started_ms": 1, "as_of_ms": 3,
+            "budget_error": False,
+            "primary": {
+                "session_id": "parent", "spent_yen": 0, "reserved_yen": 0,
+                "outcome": "running", "messages": [{
+                    "id": "p1", "session_id": "parent", "created_ms": 2,
+                    "agent": "build",
+                    "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it"},
+                    "tokens": {"input": 1000, "output": 0, "cache": {}},
+                    "cost": 0,
+                }],
+            },
+            "attempts": [],
+        }
+        guard = RuntimeGuard(Decimal("0.01"))
+        state = evaluate_run(
+            document, run_id="r", plan_sha256="h", tasks=[PlannedTask("T", "explore")],
+            executors={}, resolutions={}, primary_model=model, runtime_guard=guard,
+        )
+        self.assertEqual(state.spent_yen, Decimal("0.01176"))
+        self.assertTrue(state.runtime_latched)
+        self.assertFalse(state.report["paid_launch_allowed"])
+        self.assertTrue(state.report["runtime"]["guard_state"]["accounting_complete"])
+
     def test_digest_mismatch_rejected(self):
         doc = {"run_id": "r", "plan_sha256": "wrong"}
         with self.assertRaises(ValueError):
@@ -81,21 +110,27 @@ class DelegationRunTests(unittest.TestCase):
                          primary_model="p/m")
 
     def test_execution_failure_retry_preserves_cost_and_history(self):
+        from nepoforge.runtime_guard import RuntimeGuard
+
+        model = "fastmetal/gemma-4-26b-a4b-it"
         task = PlannedTask("T", "explore")
         resolution = ModelResolution(
-            "T", "agent", "explore", ModelRef("p", "m"), "explore", "default"
+            "T", "agent", "explore", ModelRef("fastmetal", "gemma-4-26b-a4b-it"),
+            "explore", "default"
         )
 
         def attempt(number, session, started, ended, cost):
             return {
                 "task_id": "T", "attempt": number, "session_id": session,
-                "started_ms": started, "ended_ms": ended, "model": "p/m",
+                "started_ms": started, "ended_ms": ended, "model": model,
                 "reserved_yen": 0, "spent_yen": cost,
                 "outcome": "failed", "failure_reason": "execution_failure",
                 "messages": [{
                     "id": f"c{number}", "session_id": session,
                     "parent_session_id": "parent", "created_ms": started,
-                    "agent": "explore", "model": {"providerID": "p", "id": "m"},
+                    "agent": "explore",
+                    "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it"},
+                    "tokens": {"input": 1000, "output": 0, "cache": {}},
                 }],
             }
 
@@ -108,7 +143,9 @@ class DelegationRunTests(unittest.TestCase):
                     "success": True, "ended_ms": 8,
                     "messages": [{
                         "id": "p1", "session_id": "parent", "created_ms": 2,
-                        "agent": "build", "model": {"providerID": "p", "id": "m"},
+                        "agent": "build",
+                        "model": {"providerID": "fastmetal", "id": "gemma-4-26b-a4b-it"},
+                        "tokens": {"input": 1000, "output": 0, "cache": {}},
                     }],
                 },
                 "attempts": attempts,
@@ -118,27 +155,30 @@ class DelegationRunTests(unittest.TestCase):
         state = evaluate_run(
             document([first]), run_id="r", plan_sha256="h", tasks=[task],
             executors={"T": "agent"}, resolutions={"T": resolution},
-            primary_model="p/m", retry_limits={"T": 1},
+            primary_model=model, retry_limits={"T": 1},
+            runtime_guard=RuntimeGuard(Decimal("100")),
         )
         self.assertEqual(state.retryable, {"T"})
-        self.assertEqual(state.spent_yen, Decimal("4"))
+        self.assertEqual(state.spent_yen, Decimal("0.02352"))
         self.assertEqual(len(state.report["tasks"]), 1)
 
         retry = attempt(2, "child2", 4, 5, 2)
         state = evaluate_run(
             document([first, retry]), run_id="r", plan_sha256="h", tasks=[task],
             executors={"T": "agent"}, resolutions={"T": resolution},
-            primary_model="p/m", retry_limits={"T": 1},
+            primary_model=model, retry_limits={"T": 1},
+            runtime_guard=RuntimeGuard(Decimal("100")),
         )
-        self.assertEqual(state.spent_yen, Decimal("6"))
+        self.assertEqual(state.spent_yen, Decimal("0.03528"))
         self.assertEqual([row["attempt"] for row in state.report["tasks"]], [1, 2])
-        self.assertEqual([row["cost_yen"] for row in state.report["tasks"]], ["1", "2"])
+        self.assertEqual([row["cost_yen"] for row in state.report["tasks"]], ["0.01176", "0.01176"])
         self.assertEqual(state.retryable, set())
 
         stopped = evaluate_run(
             document([first, retry], budget_error=True), run_id="r", plan_sha256="h",
             tasks=[task], executors={"T": "agent"}, resolutions={"T": resolution},
-            primary_model="p/m", retry_limits={"T": 1},
+            primary_model=model, retry_limits={"T": 1},
+            runtime_guard=RuntimeGuard(Decimal("100")),
         )
         self.assertEqual(stopped.report["tasks"], state.report["tasks"])
         self.assertEqual(stopped.retryable, set())
@@ -146,7 +186,7 @@ class DelegationRunTests(unittest.TestCase):
             evaluate_run(
                 document([first, retry]), run_id="r", plan_sha256="h", tasks=[task],
                 executors={"T": "agent"}, resolutions={"T": resolution},
-                primary_model="p/m",
+                primary_model=model,
             )
 
     def test_summarize_report_normal(self):
@@ -260,6 +300,10 @@ class DelegationRunTests(unittest.TestCase):
         self.assertEqual(runtime["guard_state"]["stop_reason"], "monitor disconnected")
         self.assertEqual(runtime["observation_status"], "stopped")
         self.assertEqual(runtime["interrupt_observation"]["adapter_status"], "unknown")
+        self.assertEqual(
+            runtime["interrupt_observation"]["candidate_sessions"][0]["request_status"],
+            "not_configured",
+        )
         self.assertEqual(
             runtime["interrupt_observation"]["candidate_sessions"][0]["session_id"], "s"
         )

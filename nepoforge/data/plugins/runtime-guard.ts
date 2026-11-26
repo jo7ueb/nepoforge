@@ -14,6 +14,7 @@ import {
   canAccountUsageEvent,
   consumeEvents,
   failureIdentity,
+  isProviderBudgetError,
   isInScope,
   normalizeSessionRecord,
   normalizeUsageEvent,
@@ -129,6 +130,10 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       if (handledFailures.has(identity)) return
       handledFailures.add(identity)
       const text = String((error as AnyRecord)?.message ?? error ?? "").toLowerCase()
+      if (isProviderBudgetError(text)) {
+        await latch()
+        return
+      }
       const fingerprint = text.includes("oldstring") || text.includes("old string")
         ? "oldstring-mismatch"
         : text.includes("permission") || text.includes("denied") ? "permission-denied"
@@ -203,11 +208,19 @@ export const RuntimeGuardPlugin: PluginTypes.Plugin = {
       if (row.type === "session.usage.updated" || row.type === "session.step.ended") {
         await countUsageEvent(row)
       } else if (row.type === "session.step.failed") {
-        // Failed steps may omit cost/token metrics; they are not tool-call failures
-        // and incomplete usage must not latch the entire run. Missing spend is an
-        // explicit accounting limitation of this monitoring PoC.
         const p = row.properties ?? {}
-        if (canAccountUsageEvent(row)) await countUsageEvent(row)
+        if (isProviderBudgetError(p.error)) {
+          const sessionID = p.sessionID
+          if (typeof sessionID !== "string" || !sessionID) {
+            throw new Error("budget failure event is missing sessionID")
+          }
+          const scoped = await resolveScope(sessionID)
+          if (scoped === false) return
+          if (scoped !== true) throw new Error("budget failure session ancestry unavailable")
+          await latch()
+        } else if (canAccountUsageEvent(row)) {
+          await countUsageEvent(row)
+        }
       } else if (row.type === "session.tool.failed") {
         const p = row.properties ?? {}
         if (typeof p.sessionID !== "string") throw new Error("tool failure event is missing sessionID")
